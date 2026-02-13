@@ -138,8 +138,34 @@ func TestPrintUsage_IncludesKeepWorkspaceErrorFlag(t *testing.T) {
 	if !strings.Contains(out, "--keep-workspace-error") {
 		t.Fatalf("expected usage to include keep-workspace-error flag, got:\n%s", out)
 	}
-	if !strings.Contains(out, "checks <init|add|extract|list|validate|doctor|explain|enable|disable>") {
-		t.Fatalf("expected usage to include checks init/doctor/explain commands, got:\n%s", out)
+	if !strings.Contains(out, "governor checks [<tui|init|add|extract|list|validate|doctor|explain|enable|disable>] [flags]") {
+		t.Fatalf("expected usage to include checks tui/init/doctor/explain commands, got:\n%s", out)
+	}
+}
+
+func TestRunChecks_DefaultNonInteractiveFallsBackToList(t *testing.T) {
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	restoreWD := setWorkingDir(t, t.TempDir())
+	defer restoreWD()
+
+	out := captureStdout(t, func() {
+		if err := runChecks(nil); err != nil {
+			t.Fatalf("runChecks failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "appsec") {
+		t.Fatalf("expected non-interactive fallback to checks list output, got:\n%s", out)
+	}
+}
+
+func TestRunChecksTUI_NonInteractiveReturnsError(t *testing.T) {
+	err := runChecks([]string{"tui"})
+	if err == nil {
+		t.Fatal("expected checks tui to fail in non-interactive mode")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "interactive terminal") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

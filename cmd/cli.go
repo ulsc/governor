@@ -15,6 +15,7 @@ import (
 
 	"github.com/mattn/go-isatty"
 	"governor/internal/app"
+	"governor/internal/checkstui"
 	"governor/internal/checks"
 	"governor/internal/extractor"
 	"governor/internal/isolation"
@@ -127,7 +128,7 @@ func runAudit(args []string) error {
 		return err
 	}
 
-	useTUI := isatty.IsTerminal(os.Stdout.Fd()) && isatty.IsTerminal(os.Stderr.Fd()) && isatty.IsTerminal(os.Stdin.Fd())
+	useTUI := isInteractiveTerminal()
 	if *enableTUI {
 		useTUI = true
 	}
@@ -417,10 +418,15 @@ func printIsolateAuditSummaryFromHost(outDir string) error {
 
 func runChecks(args []string) error {
 	if len(args) == 0 {
-		return usageError("usage: governor checks <init|add|extract|list|validate|doctor|explain|enable|disable> [flags]")
+		if isInteractiveTerminal() {
+			return runChecksTUI(nil)
+		}
+		return runChecksList(nil)
 	}
 
 	switch args[0] {
+	case "tui":
+		return runChecksTUI(args[1:])
 	case "init":
 		return runChecksInit(args[1:])
 	case "add":
@@ -442,6 +448,25 @@ func runChecks(args []string) error {
 	default:
 		return usageError(fmt.Sprintf("unknown checks subcommand %q", args[0]))
 	}
+}
+
+func runChecksTUI(args []string) error {
+	fs := flag.NewFlagSet("checks tui", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks + ~/.governor/checks, repo first)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("checks tui does not accept positional args")
+	}
+	if !isInteractiveTerminal() {
+		return errors.New("checks tui requires an interactive terminal")
+	}
+	return checkstui.Run(checkstui.Options{
+		ChecksDir: *checksDir,
+	})
 }
 
 func runChecksInit(args []string) error {
@@ -1219,13 +1244,19 @@ func usageError(msg string) error {
 	return errors.New(msg)
 }
 
+func isInteractiveTerminal() bool {
+	return isatty.IsTerminal(os.Stdout.Fd()) &&
+		isatty.IsTerminal(os.Stderr.Fd()) &&
+		isatty.IsTerminal(os.Stdin.Fd())
+}
+
 func printUsage() {
 	fmt.Println("Governor CLI")
 	fmt.Println("")
 	fmt.Println("Usage:")
 	fmt.Println("  governor audit <path-or-zip> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
-	fmt.Println("  governor checks <init|add|extract|list|validate|doctor|explain|enable|disable> [flags]")
+	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|enable|disable>] [flags]")
 	fmt.Println("")
 	fmt.Println("Flags (audit):")
 	fmt.Println("  --out <dir>         Output directory (default ./.governor/runs/<timestamp>)")
