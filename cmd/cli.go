@@ -811,11 +811,140 @@ func runChecksStatus(args []string, status checks.Status) error {
 }
 
 func runChecksDoctor(args []string) error {
-	return errors.New("checks doctor is not implemented yet")
+	fs := flag.NewFlagSet("checks doctor", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks + ~/.governor/checks, repo first)")
+	format := fs.String("format", "text", "Output format: text|json")
+	strict := fs.Bool("strict", false, "Treat warnings as failures")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("checks doctor does not accept positional args")
+	}
+
+	outFormat := strings.ToLower(strings.TrimSpace(*format))
+	if outFormat != "text" && outFormat != "json" {
+		return errors.New("--format must be text or json")
+	}
+
+	dirs, err := checks.ResolveReadDirs(*checksDir)
+	if err != nil {
+		return err
+	}
+	report, err := checks.BuildDoctorReport(dirs)
+	if err != nil {
+		return err
+	}
+
+	if outFormat == "json" {
+		payload, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal checks doctor report: %w", err)
+		}
+		fmt.Println(string(payload))
+	} else {
+		fmt.Printf("searched dirs: %s\n", strings.Join(report.SearchedDirs, ", "))
+		fmt.Printf("effective checks: %d\n", len(report.Effective))
+		fmt.Printf("shadowed checks: %d\n", len(report.Shadowed))
+		fmt.Printf("diagnostics: error=%d warning=%d info=%d\n", report.Summary.Error, report.Summary.Warning, report.Summary.Info)
+
+		if len(report.Diagnostics) > 0 {
+			fmt.Println("")
+			fmt.Println("diagnostics:")
+			for _, diag := range report.Diagnostics {
+				location := diag.Path
+				if location == "" {
+					location = "(no path)"
+				}
+				idSuffix := ""
+				if strings.TrimSpace(diag.CheckID) != "" {
+					idSuffix = " id=" + diag.CheckID
+				}
+				fmt.Printf("- [%s] %s%s: %s\n", strings.ToUpper(string(diag.Severity)), location, idSuffix, diag.Message)
+				if strings.TrimSpace(diag.Hint) != "" {
+					fmt.Printf("  hint: %s\n", diag.Hint)
+				}
+			}
+		}
+	}
+
+	if report.Summary.Error > 0 {
+		return fmt.Errorf("checks doctor found %d error(s)", report.Summary.Error)
+	}
+	if *strict && report.Summary.Warning > 0 {
+		return fmt.Errorf("checks doctor strict mode failed with %d warning(s)", report.Summary.Warning)
+	}
+	return nil
 }
 
 func runChecksExplain(args []string) error {
-	return errors.New("checks explain is not implemented yet")
+	fs := flag.NewFlagSet("checks explain", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks + ~/.governor/checks, repo first)")
+	format := fs.String("format", "text", "Output format: text|json")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 1 {
+		return errors.New("usage: governor checks explain <check-id> [--checks-dir <dir>] [--format text|json]")
+	}
+
+	outFormat := strings.ToLower(strings.TrimSpace(*format))
+	if outFormat != "text" && outFormat != "json" {
+		return errors.New("--format must be text or json")
+	}
+
+	checkID := strings.TrimSpace(fs.Args()[0])
+	dirs, err := checks.ResolveReadDirs(*checksDir)
+	if err != nil {
+		return err
+	}
+
+	result, err := checks.ExplainCheck(dirs, checkID)
+	if err != nil {
+		return err
+	}
+
+	if outFormat == "json" {
+		payload, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal checks explain output: %w", err)
+		}
+		fmt.Println(string(payload))
+	} else {
+		fmt.Printf("check id: %s\n", result.CheckID)
+		fmt.Printf("searched dirs: %s\n", strings.Join(result.SearchedDirs, ", "))
+		if result.Effective == nil {
+			fmt.Println("effective: (not found)")
+		} else {
+			fmt.Printf("effective path: %s\n", result.Effective.Path)
+			fmt.Printf("status: %s\n", result.Effective.Definition.Status)
+			fmt.Printf("name: %s\n", result.Effective.Definition.Name)
+			fmt.Printf("source: %s\n", result.Effective.Definition.Source)
+		}
+		if len(result.Shadowed) > 0 {
+			fmt.Printf("shadowed: %d\n", len(result.Shadowed))
+			for _, item := range result.Shadowed {
+				fmt.Printf("- %s\n", item.Path)
+			}
+		}
+		if len(result.Invalid) > 0 {
+			fmt.Printf("invalid candidates: %d\n", len(result.Invalid))
+			for _, item := range result.Invalid {
+				fmt.Printf("- %s: %s\n", item.Path, item.Error)
+			}
+		}
+	}
+
+	if result.Effective == nil {
+		return fmt.Errorf("check %q not found in: %s", result.CheckID, strings.Join(result.SearchedDirs, ", "))
+	}
+	return nil
 }
 
 type checkCreateInput struct {

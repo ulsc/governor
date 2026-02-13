@@ -270,6 +270,83 @@ func TestRunChecksStatus_DefaultNotFoundIncludesAllDirs(t *testing.T) {
 	}
 }
 
+func TestRunChecksDoctor_StrictFailsOnWarnings(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	restoreWD := setWorkingDir(t, repoRoot)
+	defer restoreWD()
+
+	repoChecks := filepath.Join(repoRoot, ".governor", "checks")
+	if _, err := checks.WriteDefinition(repoChecks, checks.Definition{
+		APIVersion:   checks.APIVersion,
+		ID:           "doctor-warning",
+		Name:         "Doctor Warning",
+		Status:       checks.StatusEnabled,
+		Source:       checks.SourceCustom,
+		Instructions: "too short",
+	}, false); err != nil {
+		t.Fatalf("write check: %v", err)
+	}
+
+	err := runChecksDoctor([]string{"--strict"})
+	if err == nil {
+		t.Fatal("expected strict doctor to fail on warnings")
+	}
+	if !strings.Contains(err.Error(), "strict mode failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunChecksExplain_PrintsEffectivePath(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	homeRoot := filepath.Join(t.TempDir(), "home")
+	t.Setenv("HOME", homeRoot)
+	restoreWD := setWorkingDir(t, repoRoot)
+	defer restoreWD()
+
+	repoChecks := filepath.Join(repoRoot, ".governor", "checks")
+	homeChecks := filepath.Join(homeRoot, ".governor", "checks")
+	repoPath, err := checks.WriteDefinition(repoChecks, checks.Definition{
+		APIVersion:   checks.APIVersion,
+		ID:           "explain-check",
+		Name:         "Repo Explain",
+		Status:       checks.StatusEnabled,
+		Source:       checks.SourceCustom,
+		Description:  "repo",
+		Instructions: "This instruction text is intentionally long enough to avoid short-instruction diagnostics.",
+	}, false)
+	if err != nil {
+		t.Fatalf("write repo check: %v", err)
+	}
+	if _, err := checks.WriteDefinition(homeChecks, checks.Definition{
+		APIVersion:   checks.APIVersion,
+		ID:           "explain-check",
+		Name:         "Home Explain",
+		Status:       checks.StatusEnabled,
+		Source:       checks.SourceCustom,
+		Description:  "home",
+		Instructions: "This instruction text is intentionally long enough to avoid short-instruction diagnostics.",
+	}, false); err != nil {
+		t.Fatalf("write home check: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runChecksExplain([]string{"explain-check"}); err != nil {
+			t.Fatalf("runChecksExplain failed: %v", err)
+		}
+	})
+	_ = repoPath
+	if !strings.Contains(out, "effective path:") || !strings.Contains(out, filepath.Join(".governor", "checks", "explain-check.check.yaml")) {
+		t.Fatalf("expected effective repo path in output, got:\n%s", out)
+	}
+}
+
 func setWorkingDir(t *testing.T, path string) func() {
 	t.Helper()
 	oldWD, err := os.Getwd()
