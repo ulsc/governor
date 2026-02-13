@@ -1,0 +1,165 @@
+name: Release Artifacts
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-artifacts:
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ''
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            ext: ''
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag commit is on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/main"; then
+            echo "Tag commit $GITHUB_SHA is not reachable from origin/main"
+            exit 1
+          fi
+
+      - name: Setup Go
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: '1.25.1'
+          cache: true
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          TAG_NAME: ${{ github.ref_name }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          BINARY="governor_${TAG_NAME}_${GOOS}_${GOARCH}${EXT}"
+          go build -mod=readonly -o "dist/${BINARY}" .
+          echo "BINARY=${BINARY}" >> "$GITHUB_ENV"
+
+      - name: Package artifact
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          ARCHIVE_TYPE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          ARCHIVE_BASE="governor_${TAG_NAME}_${GOOS}_${GOARCH}"
+          if [ "${ARCHIVE_TYPE}" = "zip" ]; then
+            ARCHIVE_FILE="${ARCHIVE_BASE}.zip"
+            (
+              cd dist
+              zip -q "${ARCHIVE_FILE}" "${BINARY}"
+            )
+          else
+            ARCHIVE_FILE="${ARCHIVE_BASE}.tar.gz"
+            (
+              cd dist
+              tar -czf "${ARCHIVE_FILE}" "${BINARY}"
+            )
+          fi
+          echo "ARCHIVE_FILE=${ARCHIVE_FILE}" >> "$GITHUB_ENV"
+
+      - name: Generate checksum
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            sha256sum "${ARCHIVE_FILE}" > "${ARCHIVE_FILE}.sha256"
+          )
+          echo "CHECKSUM_FILE=${ARCHIVE_FILE}.sha256" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.ARCHIVE_FILE }}
+          path: |
+            dist/${{ env.ARCHIVE_FILE }}
+            dist/${{ env.CHECKSUM_FILE }}
+          if-no-files-found: error
+
+
+  attest-artifacts:
+    name: Attest ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-24.04
+    needs: build-artifacts
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            archive: zip
+
+    steps:
+      - name: Resolve archive name
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          ARCHIVE_TYPE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          ARCHIVE_BASE="governor_${TAG_NAME}_${GOOS}_${GOARCH}"
+          if [ "${ARCHIVE_TYPE}" = "zip" ]; then
+            ARCHIVE_FILE="${ARCHIVE_BASE}.zip"
+          else
+            ARCHIVE_FILE="${ARCHIVE_BASE}.tar.gz"
+          fi
+          echo "ARCHIVE_FILE=${ARCHIVE_FILE}" >> "$GITHUB_ENV"
+
+      - name: Download artifact
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+          name: ${{ env.ARCHIVE_FILE }}
+          path: dist
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: dist/${{ env.ARCHIVE_FILE }}/${{ env.ARCHIVE_FILE }}

@@ -1,0 +1,40 @@
+FROM golang:1.25-bookworm@sha256:38342f3e7a504bf1efad858c18e771f84b66dc0b363add7a57c9a0bbb6cf7b12 AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd ./cmd
+COPY internal ./internal
+COPY main.go ./
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/governor .
+
+FROM node:20-bookworm-slim@sha256:c6585df72c34172bebd8d36abed961e231d7d3b5cee2e01294c4495e8a03f687
+
+ARG CODEX_NPM_VERSION=0.101.0
+ARG CODEX_NPM_INTEGRITY=sha512-H874q5K5I3chrT588BaddMr7GNvRYypc8C1MKWytNUF2PgxWMko2g/2DgKbt5OdajZKMsWdbsPywu34KQGf5Qw==
+
+RUN set -eu; \
+  pkg="@openai/codex@${CODEX_NPM_VERSION}"; \
+  tarball="$(npm pack "${pkg}" --silent | tail -n1)"; \
+  actual_b64="$(node -e "const fs=require('fs');const crypto=require('crypto');const p=process.argv[1];process.stdout.write(crypto.createHash('sha512').update(fs.readFileSync(p)).digest('base64'))" "${tarball}")"; \
+  expected_b64="${CODEX_NPM_INTEGRITY#sha512-}"; \
+  [ "${actual_b64}" = "${expected_b64}" ]; \
+  npm install -g --ignore-scripts "${tarball}"; \
+  rm -f "${tarball}"
+
+COPY --from=builder /out/governor /usr/local/bin/governor
+
+RUN useradd --uid 65532 --create-home --home-dir /home/governor governor \
+  && mkdir -p /work /tmp /codex-home \
+  && chown -R 65532:65532 /home/governor /work /tmp /codex-home
+
+USER 65532:65532
+WORKDIR /work
+
+ENV PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+ENV HOME=/home/governor
+ENV CODEX_HOME=/codex-home
+
+CMD ["governor", "help"]

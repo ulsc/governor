@@ -1,0 +1,60 @@
+package checks
+
+import "testing"
+
+func TestBuildSelection_DefaultIncludesBuiltinsAndEnabledCustom(t *testing.T) {
+	custom := []Definition{
+		{APIVersion: APIVersion, ID: "custom-enabled", Status: StatusEnabled, Source: SourceCustom, Instructions: "x"},
+		{APIVersion: APIVersion, ID: "custom-draft", Status: StatusDraft, Source: SourceCustom, Instructions: "x"},
+		{APIVersion: APIVersion, ID: "custom-disabled", Status: StatusDisabled, Source: SourceCustom, Instructions: "x"},
+	}
+
+	res, err := BuildSelection(Builtins(), custom, SelectionOptions{
+		IncludeBuiltins: true,
+		IncludeCustom:   true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ids := map[string]struct{}{}
+	for _, check := range res.Checks {
+		ids[check.ID] = struct{}{}
+	}
+
+	if _, ok := ids["appsec"]; !ok {
+		t.Fatalf("expected appsec builtin to be selected")
+	}
+	if _, ok := ids["custom-enabled"]; !ok {
+		t.Fatalf("expected custom-enabled to be selected")
+	}
+	if _, ok := ids["custom-draft"]; ok {
+		t.Fatalf("did not expect draft check to be selected")
+	}
+	if _, ok := ids["custom-disabled"]; ok {
+		t.Fatalf("did not expect disabled check to be selected")
+	}
+}
+
+func TestBuildSelection_OnlyAndSkipApplied(t *testing.T) {
+	custom := []Definition{
+		{APIVersion: APIVersion, ID: "foo", Status: StatusEnabled, Source: SourceCustom, Instructions: "x"},
+		{APIVersion: APIVersion, ID: "bar", Status: StatusEnabled, Source: SourceCustom, Instructions: "x"},
+	}
+
+	res, err := BuildSelection(Builtins(), custom, SelectionOptions{
+		IncludeBuiltins: true,
+		IncludeCustom:   true,
+		OnlyIDs:         []string{"foo", "appsec"},
+		SkipIDs:         []string{"appsec"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Checks) != 1 {
+		t.Fatalf("expected 1 selected check, got %d", len(res.Checks))
+	}
+	if res.Checks[0].ID != "foo" {
+		t.Fatalf("expected foo, got %s", res.Checks[0].ID)
+	}
+}

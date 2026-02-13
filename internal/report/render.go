@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"os"
 	"sort"
 	"strings"
 
 	"governor/internal/model"
 	"governor/internal/redact"
+	"governor/internal/safefile"
 )
 
 func WriteJSON(path string, report model.AuditReport) error {
@@ -19,7 +19,7 @@ func WriteJSON(path string, report model.AuditReport) error {
 	if err != nil {
 		return fmt.Errorf("marshal audit report: %w", err)
 	}
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	if err := safefile.WriteFileAtomic(path, b, 0o600); err != nil {
 		return fmt.Errorf("write audit json: %w", err)
 	}
 	return nil
@@ -28,7 +28,7 @@ func WriteJSON(path string, report model.AuditReport) error {
 func WriteMarkdown(path string, report model.AuditReport) error {
 	report = redactReport(report)
 	content := RenderMarkdown(report)
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := safefile.WriteFileAtomic(path, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write audit markdown: %w", err)
 	}
 	return nil
@@ -37,7 +37,7 @@ func WriteMarkdown(path string, report model.AuditReport) error {
 func WriteHTML(path string, report model.AuditReport) error {
 	report = redactReport(report)
 	content := RenderHTML(report)
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := safefile.WriteFileAtomic(path, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write audit html: %w", err)
 	}
 	return nil

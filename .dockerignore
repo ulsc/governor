@@ -1,0 +1,17 @@
+.git
+.governor
+bin
+dist
+coverage.out
+*.test
+*.out
+.DS_Store
+node_modules
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+secrets.*
