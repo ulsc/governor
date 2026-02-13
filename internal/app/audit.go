@@ -42,6 +42,8 @@ type AuditOptions struct {
 	SkipChecks           []string
 	KeepWorkspaceOnError bool
 	AllowExistingOutDir  bool
+
+	SandboxDenyHostFallback bool
 }
 
 type ArtifactPaths struct {
@@ -217,6 +219,8 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 		Sink:        sink,
 		Mode:        opts.ExecutionMode,
 		SandboxMode: opts.SandboxMode,
+
+		SandboxDenyHostFallback: opts.SandboxDenyHostFallback,
 	})
 
 	findings := make([]model.Finding, 0, 128)

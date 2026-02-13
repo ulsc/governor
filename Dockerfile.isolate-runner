@@ -15,6 +15,11 @@ FROM node:20-bookworm-slim@sha256:c6585df72c34172bebd8d36abed961e231d7d3b5cee2e0
 ARG CODEX_NPM_VERSION=0.101.0
 ARG CODEX_NPM_INTEGRITY=sha512-H874q5K5I3chrT588BaddMr7GNvRYypc8C1MKWytNUF2PgxWMko2g/2DgKbt5OdajZKMsWdbsPywu34KQGf5Qw==
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && update-ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 RUN set -eu; \
   pkg="@openai/codex@${CODEX_NPM_VERSION}"; \
   tarball="$(npm pack "${pkg}" --silent | tail -n1)"; \

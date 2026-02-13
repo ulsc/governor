@@ -2,6 +2,7 @@ package isolation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"governor/internal/model"
+	reportpkg "governor/internal/report"
 	"governor/internal/safefile"
 )
 
@@ -23,8 +26,9 @@ const (
 	defaultMaxFiles    = 20000
 	defaultMaxBytes    = 250 * 1024 * 1024
 	defaultTimeout     = 4 * time.Minute
+	preflightCodexTO   = 20 * time.Second
 	defaultPathInImage = "/usr/bin:/bin:/usr/sbin:/sbin"
-	defaultExecMode    = "sandboxed"
+	defaultExecMode    = "host"
 	defaultSandboxMode = "read-only"
 )
 
@@ -169,6 +173,8 @@ func RunAudit(ctx context.Context, opts AuditOptions) error {
 	}
 
 	containerEnv := buildContainerEnv(hostEnv, authMode)
+	preflight := runPreflight(ctx, runtimeBin, opts, authMode, seedDir, containerEnv)
+	emitPreflight(preflight)
 	govArgs := buildInnerGovernorArgs(opts, checksAbs != "")
 	runArgs := buildContainerRunArgs(opts, inputAbs, outAbs, checksAbs, seedDir, envNames(containerEnv), govArgs)
 
@@ -178,6 +184,444 @@ func RunAudit(ctx context.Context, opts AuditOptions) error {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("isolated audit failed: %w", err)
+	}
+
+	if len(preflight.Warnings) > 0 {
+		if err := appendWarningsToAuditArtifacts(outAbs, preflight.Warnings); err != nil {
+			fmt.Fprintf(os.Stderr, "[governor] warning: failed to append preflight warnings to report: %v\n", err)
+		}
+	}
+	return nil
+}
+
+type preflightResult struct {
+	Notes    []string
+	Warnings []string
+}
+
+type endpointProbeResult struct {
+	DNSOK   bool   `json:"dns_ok"`
+	HTTPSOK bool   `json:"https_ok"`
+	Status  int    `json:"status"`
+	Error   string `json:"error"`
+}
+
+type codexProbeResult struct {
+	OK          bool   `json:"ok"`
+	ExitCode    int    `json:"exit_code"`
+	HasCABundle bool   `json:"has_ca_bundle"`
+	Stdout      string `json:"stdout"`
+	Stderr      string `json:"stderr"`
+}
+
+func runPreflight(
+	ctx context.Context,
+	runtimeBin string,
+	opts AuditOptions,
+	authMode AuthMode,
+	seedDir string,
+	containerEnv []string,
+) preflightResult {
+	result := preflightResult{
+		Notes: []string{
+			fmt.Sprintf("isolate preflight: auth-mode=%s network=%s", authMode, opts.NetworkPolicy),
+		},
+		Warnings: []string{},
+	}
+
+	switch authMode {
+	case AuthSubscription:
+		if seedDir == "" {
+			result.Warnings = append(result.Warnings, "isolate preflight: subscription auth selected but no staged auth bundle was mounted")
+		} else if _, err := os.Stat(filepath.Join(seedDir, "auth.json")); err != nil {
+			result.Warnings = append(result.Warnings, "isolate preflight: staged subscription auth.json is unavailable")
+		}
+	case AuthAPIKey:
+		result.Notes = append(result.Notes, "isolate preflight: using API key environment forwarding")
+	default:
+		result.Notes = append(result.Notes, "isolate preflight: using auto auth selection")
+	}
+
+	if opts.NetworkPolicy == NetworkNone {
+		result.Warnings = append(result.Warnings, "isolate preflight: network policy is none; Codex egress is disabled by policy")
+		return result
+	}
+
+	endpointProbe, err := probeCodexEndpoint(ctx, runtimeBin, opts, seedDir, containerEnv)
+	if err != nil {
+		result.Warnings = append(result.Warnings, "[infra.network] isolate preflight: Codex endpoint probe failed: "+sanitizeErr(err))
+	} else if endpointProbe.HTTPSOK {
+		result.Notes = append(result.Notes, fmt.Sprintf("isolate preflight: Codex endpoint reachable (status=%d)", endpointProbe.Status))
+	} else {
+		msg := "[infra.network] isolate preflight: Codex endpoint probe could not establish HTTPS"
+		if strings.TrimSpace(endpointProbe.Error) != "" {
+			msg += ": " + sanitizeErr(errors.New(endpointProbe.Error))
+		}
+		result.Warnings = append(result.Warnings, msg)
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, preflightCodexTO)
+	defer cancel()
+	codexProbe, err := probeCodexExec(probeCtx, runtimeBin, opts, seedDir, containerEnv)
+	if err != nil {
+		result.Warnings = append(result.Warnings, "[infra.unknown] isolate preflight: Codex exec probe failed: "+sanitizeErr(err))
+		return result
+	}
+	if !codexProbe.HasCABundle {
+		result.Warnings = append(result.Warnings, "[infra.tls_trust] isolate preflight: runner image does not expose a CA trust bundle")
+	}
+	if codexProbe.OK {
+		result.Notes = append(result.Notes, "isolate preflight: Codex exec probe succeeded")
+	} else {
+		label, reason := classifyCodexProbeFailure(codexProbe)
+		msg := fmt.Sprintf("[%s] isolate preflight: Codex exec probe failed (exit=%d): %s", label, codexProbe.ExitCode, reason)
+		if tail := summarizeProbeTail(codexProbe.Stderr, codexProbe.Stdout); tail != "" {
+			msg += ": " + tail
+		}
+		result.Warnings = append(result.Warnings, msg)
+	}
+	return result
+}
+
+func emitPreflight(result preflightResult) {
+	for _, note := range result.Notes {
+		note = strings.TrimSpace(note)
+		if note == "" {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "[governor] %s\n", note)
+	}
+	for _, warning := range result.Warnings {
+		warning = strings.TrimSpace(warning)
+		if warning == "" {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "[governor] warning: %s\n", warning)
+	}
+}
+
+func sanitizeErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return "unknown error"
+	}
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	msg = strings.ReplaceAll(msg, "\r", " ")
+	if len(msg) > 300 {
+		msg = msg[:300] + "..."
+	}
+	return msg
+}
+
+func summarizeProbeTail(parts ...string) string {
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		part = sanitizeErr(errors.New(part))
+		if part != "" {
+			return part
+		}
+	}
+	return ""
+}
+
+func hasAnyPattern(text string, patterns ...string) bool {
+	for _, p := range patterns {
+		if strings.Contains(text, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyCodexProbeFailure(probe codexProbeResult) (label string, reason string) {
+	text := strings.ToLower(strings.TrimSpace(probe.Stderr + "\n" + probe.Stdout))
+	if hasAnyPattern(text,
+		"unable to get local issuer certificate",
+		"certificate verify failed",
+		"x509:",
+		"unknown certificate",
+		"self signed certificate",
+		"tls handshake failure",
+	) {
+		return "infra.tls_trust", "TLS trust validation failed while Codex attempted HTTPS"
+	}
+	if hasAnyPattern(text,
+		"authentication failed",
+		"unauthorized",
+		"forbidden",
+		"invalid api key",
+		"run codex login",
+		"no auth available",
+		"401",
+		"403",
+	) {
+		return "auth.subscription", "authentication is unavailable for Codex in isolated mode"
+	}
+	if hasAnyPattern(text,
+		"temporary failure in name resolution",
+		"network is unreachable",
+		"no route to host",
+		"connection refused",
+		"connection reset by peer",
+		"timed out",
+		"context deadline exceeded",
+	) {
+		return "infra.network", "network connectivity to Codex endpoints failed"
+	}
+	if hasAnyPattern(text,
+		"stream disconnected before completion",
+		"error sending request for url",
+	) {
+		return "stream.transient", "Codex stream disconnected before a response completed"
+	}
+	return "infra.unknown", "Codex probe failed with an unclassified error"
+}
+
+func probeCodexEndpoint(
+	ctx context.Context,
+	runtimeBin string,
+	opts AuditOptions,
+	seedDir string,
+	containerEnv []string,
+) (endpointProbeResult, error) {
+	script := `set -eu
+if [ -d /codex-seed ]; then cp -R /codex-seed/. /codex-home/; chmod -R go-rwx /codex-home || true; fi
+node -e '
+const dns = require("dns").promises;
+const https = require("https");
+async function main() {
+  const out = { dns_ok: false, https_ok: false, status: 0, error: "" };
+  try {
+    await dns.lookup("chatgpt.com");
+    out.dns_ok = true;
+  } catch (e) {
+    out.error = "dns:" + (e && e.message ? e.message : String(e));
+  }
+  try {
+    await new Promise((resolve, reject) => {
+      const req = https.request("https://chatgpt.com/backend-api/codex/models?client_version=0.101.0", { method: "GET", timeout: 8000 }, (res) => {
+        out.status = res.statusCode || 0;
+        out.https_ok = true;
+        res.resume();
+        res.on("end", resolve);
+      });
+      req.on("timeout", () => req.destroy(new Error("timeout")));
+      req.on("error", reject);
+      req.end();
+    });
+  } catch (e) {
+    const msg = "https:" + (e && e.message ? e.message : String(e));
+    out.error = out.error ? out.error + "; " + msg : msg;
+  }
+  process.stdout.write(JSON.stringify(out));
+  process.exit(out.https_ok ? 0 : 2);
+}
+main().catch((e) => {
+  process.stdout.write(JSON.stringify({ dns_ok: false, https_ok: false, status: 0, error: String(e) }));
+  process.exit(2);
+});
+'`
+	args := buildProbeContainerRunArgs(opts, seedDir, envNames(containerEnv), script)
+
+	cmd := exec.CommandContext(ctx, runtimeBin, args...)
+	cmd.Env = mergeEnv(os.Environ(), containerEnv)
+	out, err := cmd.CombinedOutput()
+
+	probe, parseErr := parseEndpointProbeOutput(out)
+	if parseErr != nil {
+		if err != nil {
+			return endpointProbeResult{}, fmt.Errorf("%v; parse probe output: %w", err, parseErr)
+		}
+		return endpointProbeResult{}, fmt.Errorf("parse probe output: %w", parseErr)
+	}
+	if err != nil {
+		return probe, err
+	}
+	return probe, nil
+}
+
+func parseEndpointProbeOutput(raw []byte) (endpointProbeResult, error) {
+	out, err := extractTrailingJSON(raw)
+	if err != nil {
+		return endpointProbeResult{}, err
+	}
+	result := endpointProbeResult{}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		return endpointProbeResult{}, err
+	}
+	return result, nil
+}
+
+func probeCodexExec(
+	ctx context.Context,
+	runtimeBin string,
+	opts AuditOptions,
+	seedDir string,
+	containerEnv []string,
+) (codexProbeResult, error) {
+	script := `set -eu
+if [ -d /codex-seed ]; then cp -R /codex-seed/. /codex-home/; chmod -R go-rwx /codex-home || true; fi
+ca_bundle=0
+if [ -f /etc/ssl/certs/ca-certificates.crt ] || [ -f /etc/ssl/cert.pem ]; then
+  ca_bundle=1
+fi
+set +e
+printf '%s\n' 'Reply exactly OK.' | timeout 20s codex exec --skip-git-repo-check -C /work --color never - >/tmp/codex-probe.out 2>/tmp/codex-probe.err
+exit_code=$?
+set -e
+PROBE_EXIT="$exit_code" PROBE_CA_BUNDLE="$ca_bundle" node -e '
+const fs = require("fs");
+const exitCode = Number(process.env.PROBE_EXIT || "1");
+const hasCABundle = process.env.PROBE_CA_BUNDLE === "1";
+function readTail(path, maxChars) {
+  try {
+    const data = fs.readFileSync(path, "utf8");
+    if (data.length <= maxChars) return data;
+    return data.slice(data.length - maxChars);
+  } catch (e) {
+    return "";
+  }
+}
+const payload = {
+  ok: exitCode === 0,
+  exit_code: exitCode,
+  has_ca_bundle: hasCABundle,
+  stdout: readTail("/tmp/codex-probe.out", 600),
+  stderr: readTail("/tmp/codex-probe.err", 2500),
+};
+process.stdout.write(JSON.stringify(payload));
+process.exit(payload.ok ? 0 : 2);
+'`
+	args := buildProbeContainerRunArgs(opts, seedDir, envNames(containerEnv), script)
+
+	cmd := exec.CommandContext(ctx, runtimeBin, args...)
+	cmd.Env = mergeEnv(os.Environ(), containerEnv)
+	out, err := cmd.CombinedOutput()
+
+	probe, parseErr := parseCodexProbeOutput(out)
+	if parseErr != nil {
+		if err != nil {
+			return codexProbeResult{}, fmt.Errorf("%v; parse probe output: %w", err, parseErr)
+		}
+		return codexProbeResult{}, fmt.Errorf("parse probe output: %w", parseErr)
+	}
+	if err != nil {
+		return probe, err
+	}
+	return probe, nil
+}
+
+func parseCodexProbeOutput(raw []byte) (codexProbeResult, error) {
+	out, err := extractTrailingJSON(raw)
+	if err != nil {
+		return codexProbeResult{}, err
+	}
+	result := codexProbeResult{}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		return codexProbeResult{}, err
+	}
+	return result, nil
+}
+
+func extractTrailingJSON(raw []byte) (string, error) {
+	out := strings.TrimSpace(string(raw))
+	if out == "" {
+		return "", fmt.Errorf("empty probe output")
+	}
+	start := strings.LastIndex(out, "{")
+	if start < 0 {
+		return "", fmt.Errorf("probe output missing json payload")
+	}
+	return out[start:], nil
+}
+
+func buildProbeContainerRunArgs(opts AuditOptions, seedDir string, envVars []string, script string) []string {
+	args := []string{"run", "--rm"}
+	args = append(args,
+		"--read-only",
+		"--cap-drop=ALL",
+		"--security-opt=no-new-privileges:true",
+		"--pids-limit", "64",
+		"--memory", "256m",
+		"--cpus", "0.5",
+		"--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
+		"--tmpfs", "/home/governor:rw,noexec,nosuid,nodev,size=64m,uid=65532,gid=65532,mode=700",
+		"--tmpfs", "/work:rw,noexec,nosuid,nodev,size=16m,uid=65532,gid=65532,mode=700",
+		"--tmpfs", "/codex-home:rw,nosuid,nodev,size=32m,uid=65532,gid=65532,mode=700",
+		"--entrypoint", "sh",
+		"-w", "/work",
+	)
+	if seedDir != "" {
+		args = append(args, "-v", fmt.Sprintf("%s:/codex-seed:ro", seedDir))
+	}
+	if opts.NetworkPolicy == NetworkNone {
+		args = append(args, "--network", "none")
+	}
+	for _, key := range envVars {
+		args = append(args, "-e", key)
+	}
+	args = append(args, opts.Image, "-lc", script)
+	return args
+}
+
+func appendWarningsToAuditArtifacts(outDir string, warnings []string) error {
+	if len(warnings) == 0 {
+		return nil
+	}
+	sanitized := make([]string, 0, len(warnings))
+	seen := map[string]struct{}{}
+	for _, warning := range warnings {
+		warning = strings.TrimSpace(warning)
+		if warning == "" {
+			continue
+		}
+		if _, ok := seen[warning]; ok {
+			continue
+		}
+		seen[warning] = struct{}{}
+		sanitized = append(sanitized, warning)
+	}
+	if len(sanitized) == 0 {
+		return nil
+	}
+
+	jsonPath := filepath.Join(outDir, "audit.json")
+	mdPath := filepath.Join(outDir, "audit.md")
+	htmlPath := filepath.Join(outDir, "audit.html")
+
+	raw, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return err
+	}
+	var report model.AuditReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return err
+	}
+	existing := make(map[string]struct{}, len(report.Errors))
+	for _, existingErr := range report.Errors {
+		existing[strings.TrimSpace(existingErr)] = struct{}{}
+	}
+	for _, warning := range sanitized {
+		if _, ok := existing[warning]; ok {
+			continue
+		}
+		report.Errors = append(report.Errors, warning)
+		existing[warning] = struct{}{}
+	}
+	if err := reportpkg.WriteJSON(jsonPath, report); err != nil {
+		return err
+	}
+	if err := reportpkg.WriteMarkdown(mdPath, report); err != nil {
+		return err
+	}
+	if err := reportpkg.WriteHTML(htmlPath, report); err != nil {
+		return err
 	}
 	return nil
 }
@@ -216,7 +660,7 @@ func normalizeOptions(opts AuditOptions) AuditOptions {
 	if strings.TrimSpace(opts.ExecutionMode) == "" {
 		opts.ExecutionMode = defaultExecMode
 	}
-	if strings.TrimSpace(opts.SandboxMode) == "" && normalizeExecutionMode(opts.ExecutionMode) == defaultExecMode {
+	if strings.TrimSpace(opts.SandboxMode) == "" && normalizeExecutionMode(opts.ExecutionMode) == "sandboxed" {
 		opts.SandboxMode = defaultSandboxMode
 	}
 	return opts
@@ -612,7 +1056,7 @@ func buildInnerGovernorArgs(opts AuditOptions, hasChecksMount bool) []string {
 		if sandboxMode == "" {
 			sandboxMode = defaultSandboxMode
 		}
-		args = append(args, "--codex-sandbox", sandboxMode)
+		args = append(args, "--codex-sandbox", sandboxMode, "--sandbox-deny-host-fallback")
 	}
 	if opts.Verbose {
 		args = append(args, "--verbose")

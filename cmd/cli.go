@@ -64,6 +64,7 @@ func runAudit(args []string) error {
 	noCustomChecks := fs.Bool("no-custom-checks", false, "Run built-in checks only")
 	keepWorkspaceError := fs.Bool("keep-workspace-error", false, "Retain staged workspace only when run ends with warning/failed status")
 	allowExistingOutDir := fs.Bool("allow-existing-out-dir", false, "Allow using an existing empty output directory (internal use)")
+	sandboxDenyHostFallback := fs.Bool("sandbox-deny-host-fallback", false, "Automatically rerun tracks in host mode when sandbox denies file access (internal use)")
 
 	var onlyChecks listFlag
 	var skipChecks listFlag
@@ -155,6 +156,8 @@ func runAudit(args []string) error {
 		SkipChecks:           skipChecks.Values(),
 		KeepWorkspaceOnError: *keepWorkspaceError,
 		AllowExistingOutDir:  *allowExistingOutDir,
+
+		SandboxDenyHostFallback: *sandboxDenyHostFallback,
 	}
 
 	if useTUI {
@@ -220,7 +223,7 @@ func runIsolateAudit(args []string) error {
 	codexHome := fs.String("codex-home", "~/.codex", "Host codex home used for subscription auth bundle")
 
 	workers := fs.Int("workers", 3, "Max concurrent worker processes inside isolated run (1-3)")
-	executionMode := fs.String("execution-mode", "sandboxed", "Inner worker execution mode: sandboxed|host")
+	executionMode := fs.String("execution-mode", "host", "Inner worker execution mode: sandboxed|host")
 	codexSandbox := fs.String("codex-sandbox", "read-only", "Inner sandbox mode (sandboxed execution): read-only|workspace-write|danger-full-access")
 	maxFiles := fs.Int("max-files", 20000, "Maximum included file count")
 	maxBytes := fs.Int64("max-bytes", 250*1024*1024, "Maximum included file bytes")
@@ -1252,8 +1255,8 @@ func printUsage() {
 	fmt.Println("  --clean-image       Remove runner image after run")
 	fmt.Println("  --auth-mode <mode>  Auth mode: auto|subscription|api-key (default subscription)")
 	fmt.Println("  --codex-home <dir>  Host codex home for subscription auth bundle (default ~/.codex)")
-	fmt.Println("  --execution-mode <sandboxed|host>  Inner worker execution mode (default sandboxed)")
-	fmt.Println("  --codex-sandbox <read-only|workspace-write|danger-full-access>  Inner sandbox mode (default read-only)")
+	fmt.Println("  --execution-mode <sandboxed|host>  Inner worker execution mode (default host)")
+	fmt.Println("  --codex-sandbox <read-only|workspace-write|danger-full-access>  Inner sandbox mode (used when execution is sandboxed)")
 	fmt.Println("  --workers <1-3>     Max worker processes inside isolated run (default 3)")
 	fmt.Println("  --checks-dir <dir>  Mount custom checks read-only into isolated run")
 	fmt.Println("  --only-check <id>   Run only specified check ID (repeatable)")

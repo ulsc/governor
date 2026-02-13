@@ -208,7 +208,8 @@ Key behavior:
 - Input is mounted read-only (`/input`).
 - Output is mounted read/write at a fresh host output directory (`--out` or default `./.governor/runs/<timestamp>`) and mapped to `/output` in-container.
 - Container root filesystem is read-only with restricted capabilities.
-- Worker execution inside container defaults to sandboxed mode (`--execution-mode sandboxed --codex-sandbox read-only`).
+- Worker execution inside container defaults to host mode (`--execution-mode host`) for reliable repository access with current Codex sandbox behavior.
+- If you explicitly choose sandboxed execution, Governor can auto-rerun sandbox-denied tracks in host mode.
 - CLI prints final artifact paths using host filesystem paths.
 
 Subscription auth (no API key):
@@ -230,12 +231,22 @@ Useful flags:
 
 Notes:
 - `--out` is optional; default is `./.governor/runs/<timestamp>`.
-- Isolated defaults are hardened: `--network none`, `--pull never`, `--auth-mode subscription`, `--execution-mode sandboxed`.
+- Isolated defaults are hardened while remaining practical: `--network none`, `--pull never`, `--auth-mode subscription`, `--execution-mode host`.
 - `--network unrestricted` allows normal outbound network for model/tool calls; `none` is fully offline.
-- Worker tracks automatically retry transient Codex stream/network failures and emit a fallback non-empty JSON output when retries are exhausted (prevents empty worker output artifacts).
+- Isolated preflight now includes both endpoint reachability and a short Codex exec probe. The Codex probe is authoritative for runtime health.
+- Worker tracks retry Codex transport failures classified as retryable (for example stream/network disconnects) and emit a fallback non-empty JSON output when retries are exhausted.
 - If `--pull` is `always` or `if-missing`, `--image` must be digest pinned (`name@sha256:...`).
 - Container runtime/image caches are external to Governor output and may persist unless cleaned (`--clean-image`).
 - If you do not have a published runner image, use `Dockerfile.isolate-runner` with `make build-isolation-image`.
+
+### Isolated Troubleshooting
+
+Common diagnostic labels in worker/preflight errors:
+
+- `[infra.tls_trust]`: Runner image CA trust is missing or broken. Rebuild image from `Dockerfile.isolate-runner` and ensure `ca-certificates` are installed.
+- `[auth.subscription]`: Subscription/API auth is unavailable in the isolated environment. Re-run `codex login` on host or use `--auth-mode api-key`.
+- `[infra.network]`: Network/DNS/connectivity issue to Codex endpoints.
+- `[stream.transient]`: Stream dropped mid-response; Governor retries and may fall back to non-empty JSON output.
 
 ## Checks Command
 

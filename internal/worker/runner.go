@@ -33,6 +33,8 @@ type RunOptions struct {
 	Sink         progress.Sink
 	Mode         string
 	SandboxMode  string
+
+	SandboxDenyHostFallback bool
 }
 
 const (
@@ -213,6 +215,9 @@ func runOneTrack(parent context.Context, workspace string, manifest model.InputM
 		LogPath:      logPath,
 		OutputPath:   outputPath,
 	}
+	if execRes.hostFallbackUsed {
+		res.Error = redact.Text(execRes.hostFallbackMessage)
+	}
 
 	switch {
 	case execRes.fallbackUsed:
@@ -259,6 +264,15 @@ type trackExecutionResult struct {
 	err             error
 	fallbackUsed    bool
 	fallbackMessage string
+
+	hostFallbackUsed    bool
+	hostFallbackMessage string
+}
+
+type codexFailureClassification struct {
+	Retryable bool
+	Label     string
+	Message   string
 }
 
 func executeTrackWithRetries(
@@ -285,14 +299,16 @@ func executeTrackWithRetries(
 	var result trackExecutionResult
 	var logBuf strings.Builder
 	var lastErr error
-	var sawStreamFailure bool
+	var sawRetryableFailure bool
+	lastRetryableLabel := "stream.transient"
+	lastRetryableMessage := "retryable Codex transport failure"
 	attempted := 0
 
 	for attempt := 1; attempt <= attempts; attempt++ {
 		attempted = attempt
 		if attempt > 1 {
 			delay := retryDelay(backoff, attempt)
-			msg := fmt.Sprintf("retrying %s attempt %d/%d after transient Codex stream failure", trackName, attempt, attempts)
+			msg := fmt.Sprintf("retrying %s attempt %d/%d after %s", trackName, attempt, attempts, lastRetryableMessage)
 			opts.Sink.Emit(progress.Event{
 				Type:    progress.EventRunWarning,
 				At:      time.Now().UTC(),
@@ -313,6 +329,54 @@ func executeTrackWithRetries(
 		payload, rawOutputBytes, parsedOutput, parseErr := parseWorkerOutput(outputPath)
 		attemptErr := joinErr(cmdErr, parseErr)
 		if parsedOutput {
+			if shouldHostFallbackForSandboxDeny(opts, payload, attemptErr, combinedOut) {
+				msg := "[infra.sandbox_access] sandbox denied workspace access; rerunning track in host mode"
+				opts.Sink.Emit(progress.Event{
+					Type:    progress.EventRunWarning,
+					At:      time.Now().UTC(),
+					Track:   trackName,
+					Status:  "warning",
+					Message: msg,
+				})
+				appendHostFallbackLog(&logBuf, msg)
+
+				_ = os.Remove(outputPath)
+				hostOpts := opts
+				hostOpts.Mode = ExecutionModeHost
+				hostOpts.SandboxMode = ""
+				hostOut, hostCmdErr := runCodexAttempt(ctx, hostOpts, workspace, schemaPath, outputPath, promptText)
+				appendHostFallbackLogResult(&logBuf, hostOut, hostCmdErr)
+
+				hostPayload, hostRawOutputBytes, hostParsedOutput, hostParseErr := parseWorkerOutput(outputPath)
+				hostAttemptErr := joinErr(hostCmdErr, hostParseErr)
+				if hostParsedOutput {
+					result.payload = hostPayload
+					result.rawOutputBytes = hostRawOutputBytes
+					result.parsedOutput = true
+					result.err = hostAttemptErr
+					result.hostFallbackUsed = true
+					result.hostFallbackMessage = "[infra.sandbox_access] reran in host mode after sandbox access denial"
+					result.logBytes = []byte(strings.TrimSpace(logBuf.String()) + "\n")
+					return result
+				}
+
+				result.rawOutputBytes = hostRawOutputBytes
+				lastErr = joinErr(lastErr, fmt.Errorf("host fallback after sandbox denial: %w", hostAttemptErr))
+				classification := classifyCodexFailure(hostAttemptErr, hostOut, hostRawOutputBytes)
+				if classification.Retryable {
+					sawRetryableFailure = true
+					if strings.TrimSpace(classification.Label) != "" {
+						lastRetryableLabel = classification.Label
+					}
+					if strings.TrimSpace(classification.Message) != "" {
+						lastRetryableMessage = classification.Message
+					}
+				} else if strings.TrimSpace(classification.Label) != "" {
+					lastErr = joinErr(lastErr, fmt.Errorf("[%s] %s", classification.Label, classification.Message))
+				}
+				break
+			}
+
 			result.payload = payload
 			result.rawOutputBytes = rawOutputBytes
 			result.parsedOutput = true
@@ -323,20 +387,29 @@ func executeTrackWithRetries(
 
 		result.rawOutputBytes = rawOutputBytes
 		lastErr = joinErr(lastErr, fmt.Errorf("attempt %d/%d: %w", attempt, attempts, attemptErr))
-		retryable := isRetryableStreamFailure(attemptErr, combinedOut, rawOutputBytes)
-		if retryable {
-			sawStreamFailure = true
+		classification := classifyCodexFailure(attemptErr, combinedOut, rawOutputBytes)
+		if classification.Retryable {
+			sawRetryableFailure = true
+			if strings.TrimSpace(classification.Label) != "" {
+				lastRetryableLabel = classification.Label
+			}
+			if strings.TrimSpace(classification.Message) != "" {
+				lastRetryableMessage = classification.Message
+			}
+		} else if strings.TrimSpace(classification.Label) != "" {
+			lastErr = joinErr(lastErr, fmt.Errorf("[%s] %s", classification.Label, classification.Message))
 		}
+		retryable := classification.Retryable
 		if !retryable || attempt >= attempts || ctx.Err() != nil {
 			break
 		}
 	}
 
-	if sawStreamFailure && ctx.Err() == nil {
+	if sawRetryableFailure && ctx.Err() == nil {
 		if attempted < 1 {
 			attempted = attempts
 		}
-		fallback := buildStreamFallbackOutput(trackName, attempted)
+		fallback := buildRetryFallbackOutput(trackName, attempted)
 		fallback = redactWorkerOutput(fallback)
 		b, err := json.MarshalIndent(fallback, "", "  ")
 		if err == nil {
@@ -346,7 +419,7 @@ func executeTrackWithRetries(
 				result.parsedOutput = true
 				result.err = nil
 				result.fallbackUsed = true
-				result.fallbackMessage = fmt.Sprintf("used fallback output after %d transient Codex stream failure attempt(s)", attempted)
+				result.fallbackMessage = fmt.Sprintf("[%s] used fallback output after %d %s attempt(s)", lastRetryableLabel, attempted, lastRetryableMessage)
 				result.logBytes = []byte(strings.TrimSpace(logBuf.String()) + "\n")
 				return result
 			} else {
@@ -373,17 +446,7 @@ func runCodexAttempt(
 	outputPath string,
 	promptText string,
 ) ([]byte, error) {
-	args := []string{"exec", "--skip-git-repo-check"}
-	if normalizeExecutionMode(opts.Mode) == ExecutionModeSandboxed {
-		args = append(args, "-s", normalizeSandboxMode(opts.SandboxMode))
-	}
-	args = append(args,
-		"-C", workspace,
-		"--output-schema", schemaPath,
-		"-o", outputPath,
-		"--color", "never",
-		"-",
-	)
+	args := buildCodexExecArgs(opts, workspace, schemaPath, outputPath)
 
 	cmd := exec.CommandContext(ctx, opts.CodexBin, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -399,6 +462,26 @@ func runCodexAttempt(
 		}
 	}()
 	return cmd.CombinedOutput()
+}
+
+func buildCodexExecArgs(opts RunOptions, workspace string, schemaPath string, outputPath string) []string {
+	args := []string{"exec", "--skip-git-repo-check"}
+	switch normalizeExecutionMode(opts.Mode) {
+	case ExecutionModeSandboxed:
+		args = append(args, "-s", normalizeSandboxMode(opts.SandboxMode))
+	case ExecutionModeHost:
+		// Codex defaults to sandboxed execution when no sandbox flag is provided.
+		// Force host-equivalent execution explicitly for governor's host mode.
+		args = append(args, "-s", "danger-full-access")
+	}
+	args = append(args,
+		"-C", workspace,
+		"--output-schema", schemaPath,
+		"-o", outputPath,
+		"--color", "never",
+		"-",
+	)
+	return args
 }
 
 func parseWorkerOutput(path string) (workerOutput, []byte, bool, error) {
@@ -448,6 +531,30 @@ func appendAttemptLog(logBuf *strings.Builder, attempt int, attempts int, combin
 	}
 }
 
+func appendHostFallbackLog(logBuf *strings.Builder, message string) {
+	if logBuf.Len() > 0 {
+		logBuf.WriteString("\n")
+	}
+	logBuf.WriteString("[governor] host fallback attempt\n")
+	logBuf.WriteString(redact.Text(strings.TrimSpace(message)))
+	logBuf.WriteString("\n")
+}
+
+func appendHostFallbackLogResult(logBuf *strings.Builder, combinedOut []byte, cmdErr error) {
+	out := strings.TrimSpace(redact.Text(string(combinedOut)))
+	if out != "" {
+		logBuf.WriteString(out)
+		logBuf.WriteString("\n")
+	} else {
+		logBuf.WriteString("[governor] no output\n")
+	}
+	if cmdErr != nil {
+		logBuf.WriteString("[governor] command error: ")
+		logBuf.WriteString(redact.Text(cmdErr.Error()))
+		logBuf.WriteString("\n")
+	}
+}
+
 func retryDelay(base time.Duration, attempt int) time.Duration {
 	if attempt <= 1 || base <= 0 {
 		return 0
@@ -479,7 +586,7 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func isRetryableStreamFailure(err error, combinedOut []byte, rawOutput []byte) bool {
+func classifyCodexFailure(err error, combinedOut []byte, rawOutput []byte) codexFailureClassification {
 	var b strings.Builder
 	if err != nil {
 		b.WriteString(strings.ToLower(err.Error()))
@@ -494,19 +601,125 @@ func isRetryableStreamFailure(err error, combinedOut []byte, rawOutput []byte) b
 	}
 	text := b.String()
 	if strings.TrimSpace(text) == "" {
-		return false
+		return codexFailureClassification{}
 	}
-	patterns := []string{
+
+	if hasAnyPattern(text,
+		"landlock",
+		"sandbox restriction",
+		"sandbox restrictions",
+		"shell access is blocked by sandbox",
+		"repository file access was blocked",
+		"blocked by sandbox",
+	) {
+		return codexFailureClassification{
+			Retryable: false,
+			Label:     "infra.sandbox_access",
+			Message:   "sandbox denied repository file access for this track",
+		}
+	}
+
+	if hasAnyPattern(text,
+		"unable to get local issuer certificate",
+		"certificate verify failed",
+		"x509:",
+		"unknown certificate",
+		"self signed certificate",
+		"tls handshake failure",
+	) {
+		return codexFailureClassification{
+			Retryable: false,
+			Label:     "infra.tls_trust",
+			Message:   "TLS trust validation failed while Codex attempted HTTPS",
+		}
+	}
+
+	if hasAnyPattern(text,
+		"authentication failed",
+		"unauthorized",
+		"forbidden",
+		"invalid api key",
+		"run codex login",
+		"no auth available",
+		"401",
+		"403",
+	) {
+		return codexFailureClassification{
+			Retryable: false,
+			Label:     "auth.subscription",
+			Message:   "authentication is unavailable for Codex in this execution context",
+		}
+	}
+
+	if hasAnyPattern(text,
+		"temporary failure in name resolution",
+		"network is unreachable",
+		"no route to host",
+		"connection refused",
+		"connection reset by peer",
+		"tls handshake timeout",
+		"context deadline exceeded",
+		"timed out",
+	) {
+		return codexFailureClassification{
+			Retryable: true,
+			Label:     "infra.network",
+			Message:   "retryable Codex network failure",
+		}
+	}
+
+	if hasAnyPattern(text,
 		"stream disconnected before completion",
 		"error sending request for url",
 		"no last agent message; wrote empty content",
 		"invalid worker json output: unexpected end of json input",
 		"missing worker output",
-		"connection reset by peer",
-		"connection refused",
-		"temporary failure in name resolution",
-		"tls handshake timeout",
+	) {
+		return codexFailureClassification{
+			Retryable: true,
+			Label:     "stream.transient",
+			Message:   "retryable Codex stream failure",
+		}
 	}
+
+	return codexFailureClassification{}
+}
+
+func shouldHostFallbackForSandboxDeny(opts RunOptions, payload workerOutput, attemptErr error, combinedOut []byte) bool {
+	if !opts.SandboxDenyHostFallback {
+		return false
+	}
+	if normalizeExecutionMode(opts.Mode) != ExecutionModeSandboxed {
+		return false
+	}
+
+	var b strings.Builder
+	b.WriteString(strings.ToLower(strings.TrimSpace(payload.Summary)))
+	b.WriteString("\n")
+	for _, note := range payload.Notes {
+		b.WriteString(strings.ToLower(strings.TrimSpace(note)))
+		b.WriteString("\n")
+	}
+	if attemptErr != nil {
+		b.WriteString(strings.ToLower(strings.TrimSpace(attemptErr.Error())))
+		b.WriteString("\n")
+	}
+	if len(combinedOut) > 0 {
+		b.WriteString(strings.ToLower(string(combinedOut)))
+	}
+
+	return hasAnyPattern(b.String(),
+		"landlock",
+		"sandbox restriction",
+		"sandbox restrictions",
+		"shell access is blocked by sandbox",
+		"repository file access was blocked",
+		"all shell commands failed",
+		"blocked by sandbox",
+	)
+}
+
+func hasAnyPattern(text string, patterns ...string) bool {
 	for _, pattern := range patterns {
 		if strings.Contains(text, pattern) {
 			return true
@@ -515,11 +728,11 @@ func isRetryableStreamFailure(err error, combinedOut []byte, rawOutput []byte) b
 	return false
 }
 
-func buildStreamFallbackOutput(trackName string, attempts int) workerOutput {
+func buildRetryFallbackOutput(trackName string, attempts int) workerOutput {
 	return workerOutput{
-		Summary: fmt.Sprintf("No findings generated for %s due to transient Codex stream failures.", trackName),
+		Summary: fmt.Sprintf("No findings generated for %s due to retryable Codex transport failures.", trackName),
 		Notes: []string{
-			fmt.Sprintf("Governor retried %d time(s) after stream/network errors.", attempts),
+			fmt.Sprintf("Governor retried %d time(s) after retryable Codex stream/network errors.", attempts),
 			"This fallback output prevents empty or invalid worker output artifacts.",
 			"Re-run this audit when Codex network connectivity is stable.",
 		},

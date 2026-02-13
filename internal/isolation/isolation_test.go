@@ -1,12 +1,15 @@
 package isolation
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"governor/internal/model"
 )
 
 func TestResolveRuntimeWithLookPath_AutoPrefersDocker(t *testing.T) {
@@ -155,7 +158,7 @@ func TestBuildEntrypointScript_ContainsSeedCopy(t *testing.T) {
 	}
 }
 
-func TestBuildInnerGovernorArgs_UsesSandboxedExecutionByDefault(t *testing.T) {
+func TestBuildInnerGovernorArgs_UsesHostExecutionByDefault(t *testing.T) {
 	args := buildInnerGovernorArgs(AuditOptions{
 		Workers:  3,
 		MaxFiles: 10,
@@ -164,17 +167,39 @@ func TestBuildInnerGovernorArgs_UsesSandboxedExecutionByDefault(t *testing.T) {
 	}, false)
 
 	got := strings.Join(args, " ")
-	if !strings.Contains(got, "--execution-mode sandboxed") {
-		t.Fatalf("expected sandboxed execution mode, got: %s", got)
+	if !strings.Contains(got, "--execution-mode host") {
+		t.Fatalf("expected host execution mode, got: %s", got)
 	}
-	if !strings.Contains(got, "--codex-sandbox read-only") {
-		t.Fatalf("expected read-only sandbox in isolated mode, got: %s", got)
+	if strings.Contains(got, "--codex-sandbox") {
+		t.Fatalf("did not expect codex-sandbox flag in host mode, got: %s", got)
+	}
+	if strings.Contains(got, "--sandbox-deny-host-fallback") {
+		t.Fatalf("did not expect sandbox-deny-host-fallback flag in host mode, got: %s", got)
 	}
 	if !strings.Contains(got, "--allow-existing-out-dir") {
 		t.Fatalf("expected allow-existing-out-dir flag in isolated mode, got: %s", got)
 	}
 	if strings.Contains(got, "--keep-workspace-error") {
 		t.Fatalf("did not expect keep-workspace-error by default, got: %s", got)
+	}
+}
+
+func TestBuildInnerGovernorArgs_SandboxedEnablesHostFallbackFlag(t *testing.T) {
+	args := buildInnerGovernorArgs(AuditOptions{
+		Workers:       3,
+		MaxFiles:      10,
+		MaxBytes:      1000,
+		Timeout:       30 * time.Second,
+		ExecutionMode: "sandboxed",
+		SandboxMode:   "read-only",
+	}, false)
+
+	got := strings.Join(args, " ")
+	if !strings.Contains(got, "--codex-sandbox read-only") {
+		t.Fatalf("expected read-only sandbox in isolated mode, got: %s", got)
+	}
+	if !strings.Contains(got, "--sandbox-deny-host-fallback") {
+		t.Fatalf("expected sandbox-deny-host-fallback flag in isolated mode, got: %s", got)
 	}
 }
 
@@ -219,11 +244,11 @@ func TestNormalizeOptions_HardenedDefaults(t *testing.T) {
 	if opts.AuthMode != AuthSubscription {
 		t.Fatalf("expected default auth subscription, got %s", opts.AuthMode)
 	}
-	if opts.ExecutionMode != "sandboxed" {
-		t.Fatalf("expected default execution mode sandboxed, got %s", opts.ExecutionMode)
+	if opts.ExecutionMode != "host" {
+		t.Fatalf("expected default execution mode host, got %s", opts.ExecutionMode)
 	}
-	if opts.SandboxMode != "read-only" {
-		t.Fatalf("expected default sandbox mode read-only, got %s", opts.SandboxMode)
+	if opts.SandboxMode != "" {
+		t.Fatalf("expected default sandbox mode empty for host execution, got %s", opts.SandboxMode)
 	}
 }
 
@@ -292,5 +317,135 @@ func TestResolveOutDir_ExplicitPath(t *testing.T) {
 	want := filepath.Join(base, "my-output")
 	if got != want {
 		t.Fatalf("unexpected out dir: got %q want %q", got, want)
+	}
+}
+
+func TestRunPreflight_NetworkNoneSkipsProbe(t *testing.T) {
+	result := runPreflight(
+		t.Context(),
+		"docker",
+		AuditOptions{NetworkPolicy: NetworkNone},
+		AuthAPIKey,
+		"",
+		nil,
+	)
+
+	joinedWarnings := strings.Join(result.Warnings, "\n")
+	if !strings.Contains(joinedWarnings, "network policy is none") {
+		t.Fatalf("expected network-none warning, got: %v", result.Warnings)
+	}
+}
+
+func TestParseEndpointProbeOutput_WithPrefixLogs(t *testing.T) {
+	raw := []byte("[governor] debug line\n{\"dns_ok\":true,\"https_ok\":true,\"status\":401,\"error\":\"\"}")
+	got, err := parseEndpointProbeOutput(raw)
+	if err != nil {
+		t.Fatalf("parse probe output failed: %v", err)
+	}
+	if !got.DNSOK || !got.HTTPSOK || got.Status != 401 {
+		t.Fatalf("unexpected parsed result: %+v", got)
+	}
+}
+
+func TestParseCodexProbeOutput_WithPrefixLogs(t *testing.T) {
+	raw := []byte("[governor] debug line\n{\"ok\":false,\"exit_code\":2,\"has_ca_bundle\":false,\"stdout\":\"\",\"stderr\":\"certificate verify failed\"}")
+	got, err := parseCodexProbeOutput(raw)
+	if err != nil {
+		t.Fatalf("parse codex probe output failed: %v", err)
+	}
+	if got.OK || got.ExitCode != 2 || got.HasCABundle {
+		t.Fatalf("unexpected parsed codex probe result: %+v", got)
+	}
+}
+
+func TestClassifyCodexProbeFailure_TLS(t *testing.T) {
+	label, reason := classifyCodexProbeFailure(codexProbeResult{
+		OK:       false,
+		ExitCode: 2,
+		Stderr:   "certificate verify failed: unable to get local issuer certificate",
+	})
+	if label != "infra.tls_trust" {
+		t.Fatalf("expected infra.tls_trust label, got %q", label)
+	}
+	if !strings.Contains(strings.ToLower(reason), "tls trust") {
+		t.Fatalf("unexpected reason: %s", reason)
+	}
+}
+
+func TestClassifyCodexProbeFailure_Auth(t *testing.T) {
+	label, _ := classifyCodexProbeFailure(codexProbeResult{
+		OK:       false,
+		ExitCode: 2,
+		Stderr:   "ERROR: unauthorized 401",
+	})
+	if label != "auth.subscription" {
+		t.Fatalf("expected auth.subscription label, got %q", label)
+	}
+}
+
+func TestClassifyCodexProbeFailure_Stream(t *testing.T) {
+	label, _ := classifyCodexProbeFailure(codexProbeResult{
+		OK:       false,
+		ExitCode: 2,
+		Stderr:   "ERROR: stream disconnected before completion",
+	})
+	if label != "stream.transient" {
+		t.Fatalf("expected stream.transient label, got %q", label)
+	}
+}
+
+func TestAppendWarningsToAuditArtifacts_AppendsDedupedWarnings(t *testing.T) {
+	outDir := t.TempDir()
+	jsonPath := filepath.Join(outDir, "audit.json")
+
+	initial := model.AuditReport{
+		Findings:         []model.Finding{},
+		CountsBySeverity: map[string]int{},
+		CountsByCategory: map[string]int{},
+	}
+	b, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatalf("marshal initial report: %v", err)
+	}
+	if err := os.WriteFile(jsonPath, b, 0o600); err != nil {
+		t.Fatalf("write initial audit.json: %v", err)
+	}
+
+	err = appendWarningsToAuditArtifacts(outDir, []string{
+		"stream probe warning",
+		"stream probe warning",
+		"  ",
+		"network warning",
+	})
+	if err != nil {
+		t.Fatalf("append warnings failed: %v", err)
+	}
+
+	raw, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatalf("read updated audit.json: %v", err)
+	}
+	var got model.AuditReport
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal updated report: %v", err)
+	}
+	if len(got.Errors) != 2 {
+		t.Fatalf("expected 2 unique warnings, got %d (%v)", len(got.Errors), got.Errors)
+	}
+	if got.Errors[0] != "stream probe warning" || got.Errors[1] != "network warning" {
+		t.Fatalf("unexpected warning order/content: %v", got.Errors)
+	}
+
+	for _, path := range []string{
+		filepath.Join(outDir, "audit.md"),
+		filepath.Join(outDir, "audit.html"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("expected rendered artifact %s: %v", path, err)
+		}
+		if info.Size() == 0 {
+			t.Fatalf("expected non-empty rendered artifact %s", path)
+		}
 	}
 }

@@ -58,6 +58,27 @@ func TestBuildWorkerEnv_Allowlist(t *testing.T) {
 	}
 }
 
+func TestBuildCodexExecArgs_HostForcesDangerFullAccess(t *testing.T) {
+	args := buildCodexExecArgs(RunOptions{
+		Mode: ExecutionModeHost,
+	}, "/repo", "/schema.json", "/out.json")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-s danger-full-access") {
+		t.Fatalf("expected host mode to force danger-full-access sandbox, got: %s", joined)
+	}
+}
+
+func TestBuildCodexExecArgs_SandboxUsesConfiguredMode(t *testing.T) {
+	args := buildCodexExecArgs(RunOptions{
+		Mode:        ExecutionModeSandboxed,
+		SandboxMode: "workspace-write",
+	}, "/repo", "/schema.json", "/out.json")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-s workspace-write") {
+		t.Fatalf("expected sandbox mode to be forwarded, got: %s", joined)
+	}
+}
+
 func TestRetryDelay_ExponentialBackoff(t *testing.T) {
 	base := 2 * time.Second
 	if got := retryDelay(base, 1); got != 0 {
@@ -74,36 +95,94 @@ func TestRetryDelay_ExponentialBackoff(t *testing.T) {
 	}
 }
 
-func TestIsRetryableStreamFailure_MatchesKnownPatterns(t *testing.T) {
+func TestClassifyCodexFailure_MatchesRetryablePatterns(t *testing.T) {
 	err := errors.New("stream disconnected before completion")
-	if !isRetryableStreamFailure(err, nil, nil) {
-		t.Fatal("expected stream disconnection error to be retryable")
+	classification := classifyCodexFailure(err, nil, nil)
+	if !classification.Retryable || classification.Label != "stream.transient" {
+		t.Fatalf("expected transient stream classification, got %+v", classification)
 	}
+
 	log := []byte("ERROR: no last agent message; wrote empty content to output")
-	if !isRetryableStreamFailure(nil, log, nil) {
-		t.Fatal("expected empty-content warning to be retryable")
+	classification = classifyCodexFailure(nil, log, nil)
+	if !classification.Retryable || classification.Label != "stream.transient" {
+		t.Fatalf("expected retryable empty-content classification, got %+v", classification)
 	}
-	raw := []byte(`{"bad_json":`)
-	if !isRetryableStreamFailure(errors.New("invalid worker json output: unexpected end of json input"), nil, raw) {
-		t.Fatal("expected truncated JSON parse failure to be retryable")
+
+	classification = classifyCodexFailure(errors.New("temporary failure in name resolution"), nil, nil)
+	if !classification.Retryable || classification.Label != "infra.network" {
+		t.Fatalf("expected retryable network classification, got %+v", classification)
 	}
 }
 
-func TestIsRetryableStreamFailure_DoesNotMatchUnrelatedErrors(t *testing.T) {
-	if isRetryableStreamFailure(errors.New("permission denied"), nil, nil) {
-		t.Fatal("did not expect unrelated errors to be retryable")
+func TestClassifyCodexFailure_DetectsNonRetryableTLSAndAuth(t *testing.T) {
+	tlsErr := errors.New("certificate verify failed: unable to get local issuer certificate")
+	classification := classifyCodexFailure(tlsErr, nil, nil)
+	if classification.Retryable || classification.Label != "infra.tls_trust" {
+		t.Fatalf("expected non-retryable tls classification, got %+v", classification)
+	}
+
+	authErr := errors.New("unauthorized 401")
+	classification = classifyCodexFailure(authErr, nil, nil)
+	if classification.Retryable || classification.Label != "auth.subscription" {
+		t.Fatalf("expected non-retryable auth classification, got %+v", classification)
+	}
+
+	sandboxErr := errors.New("all shell commands failed with sandbox Landlock restriction errors")
+	classification = classifyCodexFailure(sandboxErr, nil, nil)
+	if classification.Retryable || classification.Label != "infra.sandbox_access" {
+		t.Fatalf("expected non-retryable sandbox classification, got %+v", classification)
 	}
 }
 
-func TestBuildStreamFallbackOutput(t *testing.T) {
-	out := buildStreamFallbackOutput("appsec", 3)
+func TestClassifyCodexFailure_DoesNotMatchUnrelatedErrors(t *testing.T) {
+	classification := classifyCodexFailure(errors.New("permission denied"), nil, nil)
+	if classification.Retryable || classification.Label != "" {
+		t.Fatalf("expected unrelated errors to remain unclassified, got %+v", classification)
+	}
+}
+
+func TestBuildRetryFallbackOutput(t *testing.T) {
+	out := buildRetryFallbackOutput("appsec", 3)
 	if len(out.Findings) != 0 {
 		t.Fatalf("expected empty findings, got %d", len(out.Findings))
 	}
-	if !strings.Contains(strings.ToLower(out.Summary), "transient codex stream failures") {
+	if !strings.Contains(strings.ToLower(out.Summary), "retryable codex transport failures") {
 		t.Fatalf("unexpected summary: %s", out.Summary)
 	}
 	if len(out.Notes) == 0 {
 		t.Fatal("expected fallback notes")
+	}
+}
+
+func TestShouldHostFallbackForSandboxDeny(t *testing.T) {
+	opts := RunOptions{
+		Mode:                    ExecutionModeSandboxed,
+		SandboxMode:             "read-only",
+		SandboxDenyHostFallback: true,
+	}
+	payload := workerOutput{
+		Summary: "Unable to perform audit because shell access is blocked by sandbox restrictions.",
+		Notes:   []string{"all shell commands failed with sandbox Landlock restriction errors"},
+	}
+	if !shouldHostFallbackForSandboxDeny(opts, payload, nil, nil) {
+		t.Fatal("expected sandbox-deny host fallback to be enabled")
+	}
+}
+
+func TestShouldHostFallbackForSandboxDeny_DisabledOutsideSandbox(t *testing.T) {
+	payload := workerOutput{
+		Summary: "blocked by sandbox restrictions",
+	}
+	if shouldHostFallbackForSandboxDeny(RunOptions{
+		Mode:                    ExecutionModeHost,
+		SandboxDenyHostFallback: true,
+	}, payload, nil, nil) {
+		t.Fatal("did not expect fallback in host execution mode")
+	}
+	if shouldHostFallbackForSandboxDeny(RunOptions{
+		Mode:                    ExecutionModeSandboxed,
+		SandboxDenyHostFallback: false,
+	}, payload, nil, nil) {
+		t.Fatal("did not expect fallback when feature is disabled")
 	}
 }
