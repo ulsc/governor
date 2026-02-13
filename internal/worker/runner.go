@@ -23,20 +23,25 @@ import (
 )
 
 type RunOptions struct {
-	CodexBin    string
-	OutDir      string
-	MaxParallel int
-	Timeout     time.Duration
-	Verbose     bool
-	Sink        progress.Sink
-	Mode        string
-	SandboxMode string
+	CodexBin     string
+	OutDir       string
+	MaxParallel  int
+	Timeout      time.Duration
+	RetryCount   int
+	RetryBackoff time.Duration
+	Verbose      bool
+	Sink         progress.Sink
+	Mode         string
+	SandboxMode  string
 }
 
 const (
 	ExecutionModeSandboxed = "sandboxed"
 	ExecutionModeHost      = "host"
 	DefaultSandboxMode     = "read-only"
+	defaultRetryCount      = 3
+	defaultRetryBackoff    = 2 * time.Second
+	maxRetryBackoff        = 15 * time.Second
 )
 
 type workerOutput struct {
@@ -68,6 +73,15 @@ func RunAll(ctx context.Context, workspace string, manifest model.InputManifest,
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = 4 * time.Minute
+	}
+	if opts.RetryCount < 1 {
+		opts.RetryCount = defaultRetryCount
+	}
+	if opts.RetryBackoff <= 0 {
+		opts.RetryBackoff = defaultRetryBackoff
+	}
+	if opts.RetryBackoff > maxRetryBackoff {
+		opts.RetryBackoff = maxRetryBackoff
 	}
 	if normalizeExecutionMode(opts.Mode) == "" {
 		opts.Mode = ExecutionModeSandboxed
@@ -157,68 +171,33 @@ func runOneTrack(parent context.Context, workspace string, manifest model.InputM
 	logPath := filepath.Join(opts.OutDir, fmt.Sprintf("worker-%s.log", trackName))
 	outputPath := filepath.Join(opts.OutDir, fmt.Sprintf("worker-%s-output.json", trackName))
 	promptText := prompt.BuildForCheck(checkDef, manifest)
-
-	args := []string{"exec", "--skip-git-repo-check"}
-	if normalizeExecutionMode(opts.Mode) == ExecutionModeSandboxed {
-		args = append(args, "-s", normalizeSandboxMode(opts.SandboxMode))
-	}
-	args = append(args,
-		"-C", workspace,
-		"--output-schema", schemaPath,
-		"-o", outputPath,
-		"--color", "never",
-		"-",
+	execRes := executeTrackWithRetries(
+		ctx,
+		opts,
+		trackName,
+		workspace,
+		schemaPath,
+		outputPath,
+		promptText,
 	)
-	cmd := exec.CommandContext(ctx, opts.CodexBin, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Stdin = strings.NewReader(promptText)
-	cmd.Env = buildWorkerEnv(os.Environ())
-	cmdDone := make(chan struct{})
-	defer close(cmdDone)
-	go func() {
-		select {
-		case <-ctx.Done():
-			killCommandProcessGroup(cmd)
-		case <-cmdDone:
-		}
-	}()
-	combinedOut, err := cmd.CombinedOutput()
 	heartbeatCancel()
-	redactedLog := []byte(redact.Text(string(combinedOut)))
 
+	redactedLog := execRes.logBytes
 	if writeErr := safefile.WriteFileAtomic(logPath, redactedLog, 0o600); writeErr != nil {
 		redactedLog = append(redactedLog, []byte("\n[governor] failed to write worker log: "+writeErr.Error())...)
 	}
 
-	payload := workerOutput{}
-	parsedOutput := false
-	rawOutputBytes, readErr := os.ReadFile(outputPath)
-	if readErr == nil {
-		if jsonErr := json.Unmarshal(rawOutputBytes, &payload); jsonErr != nil {
-			err = joinErr(err, fmt.Errorf("invalid worker JSON output: %w", jsonErr))
-		} else {
-			payload = redactWorkerOutput(payload)
-			redactedBytes, marshalErr := json.MarshalIndent(payload, "", "  ")
-			if marshalErr == nil {
-				rawOutputBytes = redactedBytes
-				if writeErr := safefile.WriteFileAtomic(outputPath, rawOutputBytes, 0o600); writeErr != nil {
-					err = joinErr(err, fmt.Errorf("rewrite redacted worker output: %w", writeErr))
-				}
-			} else {
-				rawOutputBytes = []byte(redact.Text(string(rawOutputBytes)))
-				if writeErr := safefile.WriteFileAtomic(outputPath, rawOutputBytes, 0o600); writeErr != nil {
-					err = joinErr(err, fmt.Errorf("rewrite redacted worker output fallback: %w", writeErr))
-				}
-			}
-			parsedOutput = true
-			opts.Sink.Emit(progress.Event{
-				Type:    progress.EventWorkerOutput,
-				Track:   trackName,
-				Message: outputPath,
-			})
-		}
-	} else {
-		err = joinErr(err, fmt.Errorf("missing worker output: %w", readErr))
+	payload := execRes.payload
+	parsedOutput := execRes.parsedOutput
+	rawOutputBytes := execRes.rawOutputBytes
+	err := execRes.err
+
+	if parsedOutput {
+		opts.Sink.Emit(progress.Event{
+			Type:    progress.EventWorkerOutput,
+			Track:   trackName,
+			Message: outputPath,
+		})
 	}
 
 	normalized := normalizeFindings(payload.Findings, trackName)
@@ -236,6 +215,9 @@ func runOneTrack(parent context.Context, workspace string, manifest model.InputM
 	}
 
 	switch {
+	case execRes.fallbackUsed:
+		res.Status = "warning"
+		res.Error = redact.Text(execRes.fallbackMessage)
 	case err == nil:
 		res.Status = "success"
 	case parsedOutput:
@@ -267,6 +249,282 @@ func runOneTrack(parent context.Context, workspace string, manifest model.InputM
 	})
 
 	return res
+}
+
+type trackExecutionResult struct {
+	payload         workerOutput
+	rawOutputBytes  []byte
+	parsedOutput    bool
+	logBytes        []byte
+	err             error
+	fallbackUsed    bool
+	fallbackMessage string
+}
+
+func executeTrackWithRetries(
+	ctx context.Context,
+	opts RunOptions,
+	trackName string,
+	workspace string,
+	schemaPath string,
+	outputPath string,
+	promptText string,
+) trackExecutionResult {
+	attempts := opts.RetryCount
+	if attempts < 1 {
+		attempts = defaultRetryCount
+	}
+	backoff := opts.RetryBackoff
+	if backoff <= 0 {
+		backoff = defaultRetryBackoff
+	}
+	if backoff > maxRetryBackoff {
+		backoff = maxRetryBackoff
+	}
+
+	var result trackExecutionResult
+	var logBuf strings.Builder
+	var lastErr error
+	var sawStreamFailure bool
+	attempted := 0
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		attempted = attempt
+		if attempt > 1 {
+			delay := retryDelay(backoff, attempt)
+			msg := fmt.Sprintf("retrying %s attempt %d/%d after transient Codex stream failure", trackName, attempt, attempts)
+			opts.Sink.Emit(progress.Event{
+				Type:    progress.EventRunWarning,
+				At:      time.Now().UTC(),
+				Track:   trackName,
+				Status:  "warning",
+				Message: msg,
+			})
+			if !sleepWithContext(ctx, delay) {
+				lastErr = joinErr(lastErr, fmt.Errorf("retry canceled by context"))
+				break
+			}
+		}
+
+		_ = os.Remove(outputPath)
+		combinedOut, cmdErr := runCodexAttempt(ctx, opts, workspace, schemaPath, outputPath, promptText)
+		appendAttemptLog(&logBuf, attempt, attempts, combinedOut, cmdErr)
+
+		payload, rawOutputBytes, parsedOutput, parseErr := parseWorkerOutput(outputPath)
+		attemptErr := joinErr(cmdErr, parseErr)
+		if parsedOutput {
+			result.payload = payload
+			result.rawOutputBytes = rawOutputBytes
+			result.parsedOutput = true
+			result.err = attemptErr
+			result.logBytes = []byte(strings.TrimSpace(logBuf.String()) + "\n")
+			return result
+		}
+
+		result.rawOutputBytes = rawOutputBytes
+		lastErr = joinErr(lastErr, fmt.Errorf("attempt %d/%d: %w", attempt, attempts, attemptErr))
+		retryable := isRetryableStreamFailure(attemptErr, combinedOut, rawOutputBytes)
+		if retryable {
+			sawStreamFailure = true
+		}
+		if !retryable || attempt >= attempts || ctx.Err() != nil {
+			break
+		}
+	}
+
+	if sawStreamFailure && ctx.Err() == nil {
+		if attempted < 1 {
+			attempted = attempts
+		}
+		fallback := buildStreamFallbackOutput(trackName, attempted)
+		fallback = redactWorkerOutput(fallback)
+		b, err := json.MarshalIndent(fallback, "", "  ")
+		if err == nil {
+			if writeErr := safefile.WriteFileAtomic(outputPath, b, 0o600); writeErr == nil {
+				result.payload = fallback
+				result.rawOutputBytes = b
+				result.parsedOutput = true
+				result.err = nil
+				result.fallbackUsed = true
+				result.fallbackMessage = fmt.Sprintf("used fallback output after %d transient Codex stream failure attempt(s)", attempted)
+				result.logBytes = []byte(strings.TrimSpace(logBuf.String()) + "\n")
+				return result
+			} else {
+				lastErr = joinErr(lastErr, fmt.Errorf("write fallback worker output: %w", writeErr))
+			}
+		} else {
+			lastErr = joinErr(lastErr, fmt.Errorf("marshal fallback worker output: %w", err))
+		}
+	}
+
+	if strings.TrimSpace(logBuf.String()) == "" {
+		logBuf.WriteString("[governor] no worker log output\n")
+	}
+	result.logBytes = []byte(strings.TrimSpace(logBuf.String()) + "\n")
+	result.err = joinErr(lastErr, ctx.Err())
+	return result
+}
+
+func runCodexAttempt(
+	ctx context.Context,
+	opts RunOptions,
+	workspace string,
+	schemaPath string,
+	outputPath string,
+	promptText string,
+) ([]byte, error) {
+	args := []string{"exec", "--skip-git-repo-check"}
+	if normalizeExecutionMode(opts.Mode) == ExecutionModeSandboxed {
+		args = append(args, "-s", normalizeSandboxMode(opts.SandboxMode))
+	}
+	args = append(args,
+		"-C", workspace,
+		"--output-schema", schemaPath,
+		"-o", outputPath,
+		"--color", "never",
+		"-",
+	)
+
+	cmd := exec.CommandContext(ctx, opts.CodexBin, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Stdin = strings.NewReader(promptText)
+	cmd.Env = buildWorkerEnv(os.Environ())
+	cmdDone := make(chan struct{})
+	defer close(cmdDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			killCommandProcessGroup(cmd)
+		case <-cmdDone:
+		}
+	}()
+	return cmd.CombinedOutput()
+}
+
+func parseWorkerOutput(path string) (workerOutput, []byte, bool, error) {
+	rawOutputBytes, readErr := os.ReadFile(path)
+	if readErr != nil {
+		return workerOutput{}, nil, false, fmt.Errorf("missing worker output: %w", readErr)
+	}
+
+	payload := workerOutput{}
+	if jsonErr := json.Unmarshal(rawOutputBytes, &payload); jsonErr != nil {
+		return workerOutput{}, rawOutputBytes, false, fmt.Errorf("invalid worker JSON output: %w", jsonErr)
+	}
+
+	payload = redactWorkerOutput(payload)
+	redactedBytes, marshalErr := json.MarshalIndent(payload, "", "  ")
+	if marshalErr == nil {
+		rawOutputBytes = redactedBytes
+		if writeErr := safefile.WriteFileAtomic(path, rawOutputBytes, 0o600); writeErr != nil {
+			return payload, rawOutputBytes, true, fmt.Errorf("rewrite redacted worker output: %w", writeErr)
+		}
+		return payload, rawOutputBytes, true, nil
+	}
+
+	rawOutputBytes = []byte(redact.Text(string(rawOutputBytes)))
+	if writeErr := safefile.WriteFileAtomic(path, rawOutputBytes, 0o600); writeErr != nil {
+		return payload, rawOutputBytes, true, fmt.Errorf("rewrite redacted worker output fallback: %w", writeErr)
+	}
+	return payload, rawOutputBytes, true, nil
+}
+
+func appendAttemptLog(logBuf *strings.Builder, attempt int, attempts int, combinedOut []byte, cmdErr error) {
+	if logBuf.Len() > 0 {
+		logBuf.WriteString("\n")
+	}
+	fmt.Fprintf(logBuf, "[governor] attempt %d/%d\n", attempt, attempts)
+	out := strings.TrimSpace(redact.Text(string(combinedOut)))
+	if out != "" {
+		logBuf.WriteString(out)
+		logBuf.WriteString("\n")
+	} else {
+		logBuf.WriteString("[governor] no output\n")
+	}
+	if cmdErr != nil {
+		logBuf.WriteString("[governor] command error: ")
+		logBuf.WriteString(redact.Text(cmdErr.Error()))
+		logBuf.WriteString("\n")
+	}
+}
+
+func retryDelay(base time.Duration, attempt int) time.Duration {
+	if attempt <= 1 || base <= 0 {
+		return 0
+	}
+	delay := base
+	for i := 2; i < attempt; i++ {
+		if delay >= maxRetryBackoff/2 {
+			return maxRetryBackoff
+		}
+		delay *= 2
+	}
+	if delay > maxRetryBackoff {
+		return maxRetryBackoff
+	}
+	return delay
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func isRetryableStreamFailure(err error, combinedOut []byte, rawOutput []byte) bool {
+	var b strings.Builder
+	if err != nil {
+		b.WriteString(strings.ToLower(err.Error()))
+		b.WriteString("\n")
+	}
+	if len(combinedOut) > 0 {
+		b.WriteString(strings.ToLower(string(combinedOut)))
+		b.WriteString("\n")
+	}
+	if len(rawOutput) > 0 {
+		b.WriteString(strings.ToLower(string(rawOutput)))
+	}
+	text := b.String()
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	patterns := []string{
+		"stream disconnected before completion",
+		"error sending request for url",
+		"no last agent message; wrote empty content",
+		"invalid worker json output: unexpected end of json input",
+		"missing worker output",
+		"connection reset by peer",
+		"connection refused",
+		"temporary failure in name resolution",
+		"tls handshake timeout",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(text, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildStreamFallbackOutput(trackName string, attempts int) workerOutput {
+	return workerOutput{
+		Summary: fmt.Sprintf("No findings generated for %s due to transient Codex stream failures.", trackName),
+		Notes: []string{
+			fmt.Sprintf("Governor retried %d time(s) after stream/network errors.", attempts),
+			"This fallback output prevents empty or invalid worker output artifacts.",
+			"Re-run this audit when Codex network connectivity is stable.",
+		},
+		Findings: []model.Finding{},
+	}
 }
 
 func emitWorkerHeartbeats(ctx context.Context, sink progress.Sink, track string, started time.Time) {

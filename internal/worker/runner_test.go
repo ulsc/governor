@@ -1,6 +1,11 @@
 package worker
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestNormalizeExecutionMode(t *testing.T) {
 	if got := normalizeExecutionMode("sandboxed"); got != ExecutionModeSandboxed {
@@ -50,5 +55,55 @@ func TestBuildWorkerEnv_Allowlist(t *testing.T) {
 	}
 	if foundUnrelated {
 		t.Fatal("did not expect unrelated secret variable in worker env")
+	}
+}
+
+func TestRetryDelay_ExponentialBackoff(t *testing.T) {
+	base := 2 * time.Second
+	if got := retryDelay(base, 1); got != 0 {
+		t.Fatalf("attempt 1 should have no delay, got %s", got)
+	}
+	if got := retryDelay(base, 2); got != 2*time.Second {
+		t.Fatalf("attempt 2 should have base delay, got %s", got)
+	}
+	if got := retryDelay(base, 3); got != 4*time.Second {
+		t.Fatalf("attempt 3 should double delay, got %s", got)
+	}
+	if got := retryDelay(base, 10); got != maxRetryBackoff {
+		t.Fatalf("delay should cap at maxRetryBackoff, got %s", got)
+	}
+}
+
+func TestIsRetryableStreamFailure_MatchesKnownPatterns(t *testing.T) {
+	err := errors.New("stream disconnected before completion")
+	if !isRetryableStreamFailure(err, nil, nil) {
+		t.Fatal("expected stream disconnection error to be retryable")
+	}
+	log := []byte("ERROR: no last agent message; wrote empty content to output")
+	if !isRetryableStreamFailure(nil, log, nil) {
+		t.Fatal("expected empty-content warning to be retryable")
+	}
+	raw := []byte(`{"bad_json":`)
+	if !isRetryableStreamFailure(errors.New("invalid worker json output: unexpected end of json input"), nil, raw) {
+		t.Fatal("expected truncated JSON parse failure to be retryable")
+	}
+}
+
+func TestIsRetryableStreamFailure_DoesNotMatchUnrelatedErrors(t *testing.T) {
+	if isRetryableStreamFailure(errors.New("permission denied"), nil, nil) {
+		t.Fatal("did not expect unrelated errors to be retryable")
+	}
+}
+
+func TestBuildStreamFallbackOutput(t *testing.T) {
+	out := buildStreamFallbackOutput("appsec", 3)
+	if len(out.Findings) != 0 {
+		t.Fatalf("expected empty findings, got %d", len(out.Findings))
+	}
+	if !strings.Contains(strings.ToLower(out.Summary), "transient codex stream failures") {
+		t.Fatalf("unexpected summary: %s", out.Summary)
+	}
+	if len(out.Notes) == 0 {
+		t.Fatal("expected fallback notes")
 	}
 }

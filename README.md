@@ -30,6 +30,7 @@ Disclaimer note:
 - [Checks Command](#checks-command)
 - [Custom Check Format](#custom-check-format)
 - [Extractor (Docs to Checks)](#extractor-docs-to-checks)
+- [Checks Docs](#checks-docs)
 - [TUI and Progress](#tui-and-progress)
 - [Output Artifacts](#output-artifacts)
 - [Security and Safety](#security-and-safety)
@@ -76,11 +77,11 @@ make build
 # 2) Run audit on a folder
 ./bin/governor audit /path/to/app
 
-# 3) Add a draft custom check
-./bin/governor checks add \
+# 3) Initialize a draft custom check from a template
+./bin/governor checks init \
   --id authz-missing-role-check \
-  --name "Missing role checks" \
-  --instructions "Find admin routes that do not verify role claims."
+  --template authz-missing-checks \
+  --name "Missing role checks"
 
 # 4) Enable it
 ./bin/governor checks enable authz-missing-role-check
@@ -231,6 +232,7 @@ Notes:
 - `--out` is optional; default is `./.governor/runs/<timestamp>`.
 - Isolated defaults are hardened: `--network none`, `--pull never`, `--auth-mode subscription`, `--execution-mode sandboxed`.
 - `--network unrestricted` allows normal outbound network for model/tool calls; `none` is fully offline.
+- Worker tracks automatically retry transient Codex stream/network failures and emit a fallback non-empty JSON output when retries are exhausted (prevents empty worker output artifacts).
 - If `--pull` is `always` or `if-missing`, `--image` must be digest pinned (`name@sha256:...`).
 - Container runtime/image caches are external to Governor output and may persist unless cleaned (`--clean-image`).
 - If you do not have a published runner image, use `Dockerfile.isolate-runner` with `make build-isolation-image`.
@@ -238,12 +240,44 @@ Notes:
 ## Checks Command
 
 ```bash
-governor checks <add|extract|list|validate|enable|disable>
+governor checks <init|add|extract|list|validate|doctor|explain|enable|disable>
 ```
+
+### `checks init` (recommended)
+
+Guided/template-based check authoring for production teams.
+
+```bash
+# List templates
+governor checks init --list-templates
+
+# Non-interactive creation
+governor checks init \
+  --non-interactive \
+  --template authz-missing-checks \
+  --id insecure-admin-surface \
+  --name "Insecure admin surface"
+```
+
+Interactive usage:
+
+```bash
+governor checks init
+```
+
+By default this writes to:
+- `./.governor/checks` when inside a git repo.
+- `~/.governor/checks` otherwise.
+
+Key flags:
+- `--template <id>`: template ID (`blank`, `authz-missing-checks`, `secrets-handling`, etc.)
+- `--overwrite`: replace existing file with same ID
+- `--status draft|enabled|disabled`
 
 ### `checks add`
 
-Creates a draft check YAML.
+Creates a draft check YAML quickly (backward-compatible path).
+For new checks, prefer `checks init`.
 
 ```bash
 governor checks add \
@@ -272,6 +306,36 @@ Validates check files and duplicate IDs.
 ```bash
 governor checks validate
 ```
+
+### `checks doctor`
+
+Runs diagnostics on effective and shadowed checks.
+
+```bash
+governor checks doctor
+governor checks doctor --strict
+governor checks doctor --format json
+```
+
+Reports:
+- invalid YAML/schema issues,
+- duplicate/shadowed IDs,
+- authoring quality warnings (weak instructions, broad scope, missing scope hints).
+
+### `checks explain`
+
+Explains exactly which check definition is active and why.
+
+```bash
+governor checks explain insecure-admin-surface
+governor checks explain insecure-admin-surface --format json
+```
+
+Shows:
+- searched directories,
+- effective check file path,
+- shadowed alternatives,
+- invalid candidates.
 
 ### `checks enable` / `checks disable`
 
@@ -345,6 +409,13 @@ Notes:
 - Extracted checks are written as `draft` by default.
 - Review and enable only the checks you trust.
 - PDF parsing is disabled by default to reduce local parser attack surface.
+
+## Checks Docs
+
+- `docs/checks/authoring.md`: day-1 check creation workflow.
+- `docs/checks/templates.md`: template catalog and usage guidance.
+- `docs/checks/troubleshooting.md`: resolving common check issues quickly.
+- `docs/checks/reference.md`: schema/reference for check fields and behaviors.
 
 ## TUI and Progress
 
