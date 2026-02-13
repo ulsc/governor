@@ -446,7 +446,7 @@ func runChecksInit(args []string) error {
 	fs.SetOutput(flag.CommandLine.Output())
 
 	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks in repo, otherwise ~/.governor/checks)")
-	templateID := fs.String("template", "blank", "Check template ID")
+	templateID := fs.String("template", "", "Check template ID")
 	listTemplates := fs.Bool("list-templates", false, "List available templates and exit")
 	nonInteractive := fs.Bool("non-interactive", false, "Disable interactive prompts")
 	overwrite := fs.Bool("overwrite", false, "Overwrite existing check file with same ID")
@@ -556,10 +556,6 @@ func runChecksAdd(args []string) error {
 		}
 		instructionsText = strings.TrimSpace(string(b))
 	}
-	if instructionsText == "" {
-		return errors.New("instructions are required")
-	}
-
 	path, status, err := runCheckCreateFlow(checkCreateInput{
 		ChecksDir:      *checksDir,
 		TemplateID:     strings.TrimSpace(*templateID),
