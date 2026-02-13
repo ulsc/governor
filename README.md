@@ -55,7 +55,7 @@ Governor is built for organizations that receive many source folders/zips and ne
 
 2. Check selection:
 - Uses built-in checks by default.
-- Adds enabled custom checks from `~/.governor/checks`.
+- Adds enabled custom checks from `./.governor/checks` and `~/.governor/checks` (repo-local takes precedence on duplicate IDs).
 
 3. Execution:
 - Runs checks with bounded concurrency (`--workers`, default `3`).
@@ -163,7 +163,9 @@ governor audit <path-or-zip> [flags]
 - `--workers <1-3>`: max concurrent worker processes (default `3`)
 - `--execution-mode <sandboxed|host>`: worker execution mode (default `sandboxed`)
 - `--codex-sandbox <mode>`: Codex sandbox for sandboxed mode (`read-only` default)
-- `--checks-dir <dir>`: custom checks directory (default `~/.governor/checks`)
+- `--checks-dir <dir>`: custom checks directory override
+  - Read defaults (when omitted): `./.governor/checks` + `~/.governor/checks` (repo first)
+  - Write defaults for `checks add`/`checks extract` (when omitted): `./.governor/checks` in repo, otherwise `~/.governor/checks`
 - `--only-check <id>`: run only specified check IDs (repeatable)
 - `--skip-check <id>`: skip specified check IDs (repeatable)
 - `--no-custom-checks`: run built-in checks only
@@ -171,6 +173,7 @@ governor audit <path-or-zip> [flags]
 - `--no-tui`: force plain mode
 - `--timeout <duration>`: per-check timeout (default `4m`)
 - `--out <dir>`: custom output directory
+- `--keep-workspace-error`: keep staged `workspace/` only for warning/failed runs (default deletes)
 
 ### Examples
 
@@ -194,21 +197,22 @@ Run Governor in a disposable container with strict mounts and runtime limits:
 make build-isolation-image IMAGE=governor-runner:local
 
 governor isolate audit ./my-app \
-  --out ./isolated-output \
   --runtime auto \
-  --network codex-only \
+  --network unrestricted \
+  --pull never \
   --image governor-runner:local
 ```
 
 Key behavior:
 - Input is mounted read-only (`/input`).
-- Output is mounted read/write only at `--out` (`/output`).
+- Output is mounted read/write at a fresh host output directory (`--out` or default `./.governor/runs/<timestamp>`) and mapped to `/output` in-container.
 - Container root filesystem is read-only with restricted capabilities.
-- Worker execution inside container is forced to sandboxed mode.
+- Worker execution inside container defaults to sandboxed mode (`--execution-mode sandboxed --codex-sandbox read-only`).
+- CLI prints final artifact paths using host filesystem paths.
 
 Subscription auth (no API key):
-- `--auth-mode auto` (default) prefers host Codex subscription state.
-- Governor stages a minimal read-only auth bundle from `~/.codex` (`auth.json` and optional `config.toml`) into an ephemeral directory and mounts it into the container.
+- `--auth-mode subscription` (default) requires host Codex subscription state.
+- Governor stages a minimal read-only auth bundle from `~/.codex` (`auth.json`) into an ephemeral directory and mounts it into the container.
 - No write-back is performed to host `~/.codex`.
 
 Useful flags:
@@ -217,12 +221,17 @@ Useful flags:
 - `--runtime auto|docker|podman`
 - `--image <runner-image>`
 - `--pull always|if-missing|never`
-- `--network codex-only|none`
+- `--network unrestricted|none`
+- `--execution-mode sandboxed|host`
+- `--codex-sandbox read-only|workspace-write|danger-full-access`
 - `--clean-image`
+- `--keep-workspace-error`
 
 Notes:
-- `--out` is required in isolate mode.
-- `codex-only` is a portable policy label; strict domain-level egress control depends on host/container networking policy.
+- `--out` is optional; default is `./.governor/runs/<timestamp>`.
+- Isolated defaults are hardened: `--network none`, `--pull never`, `--auth-mode subscription`, `--execution-mode sandboxed`.
+- `--network unrestricted` allows normal outbound network for model/tool calls; `none` is fully offline.
+- If `--pull` is `always` or `if-missing`, `--image` must be digest pinned (`name@sha256:...`).
 - Container runtime/image caches are external to Governor output and may persist unless cleaned (`--clean-image`).
 - If you do not have a published runner image, use `Dockerfile.isolate-runner` with `make build-isolation-image`.
 
@@ -271,13 +280,21 @@ governor checks enable insecure-admin-surface
 governor checks disable insecure-admin-surface
 ```
 
+Default behavior without `--checks-dir`:
+- Searches `./.governor/checks` first, then `~/.governor/checks`.
+- Enables/disables the first matching check by that precedence.
+
 ## Custom Check Format
 
 Custom checks live in:
 
 ```text
-~/.governor/checks/<id>.check.yaml
+./.governor/checks/<id>.check.yaml   # default write target when inside a git repo
+~/.governor/checks/<id>.check.yaml   # fallback/global location
 ```
+
+Load precedence:
+- Governor merges both locations and uses repo-local definitions first when duplicate IDs exist.
 
 Example:
 
@@ -353,10 +370,13 @@ manifest.json
 worker-output-schema.json
 worker-<check-id>.log
 worker-<check-id>-output.json
-workspace/                 # always present (filtered staged input for workers)
+workspace/                 # deleted by default; kept for warning/failed runs with --keep-workspace-error
 ```
 
 `audit.json` is intended for automation. `audit.md` and `audit.html` are intended for humans.
+
+Git hygiene:
+- Keep `.governor/.gitignore` tracked so `runs/` artifacts stay out of git while `.governor/checks/` can be versioned.
 
 ## Security and Safety
 

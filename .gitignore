@@ -1,0 +1,34 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go
+*.test
+*.out
+coverage.out
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Governor local state
+.governor/*
+!.governor/.gitignore
+!.governor/checks/
+!.governor/checks/**
+
+# Local secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+secrets.*

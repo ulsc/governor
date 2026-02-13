@@ -1,0 +1,8 @@
+# Keep this file and repo-local checks.
+*
+!.gitignore
+!checks/
+!checks/**
+
+# Always ignore generated run artifacts.
+runs/
