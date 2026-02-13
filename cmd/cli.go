@@ -15,8 +15,8 @@ import (
 
 	"github.com/mattn/go-isatty"
 	"governor/internal/app"
-	"governor/internal/checkstui"
 	"governor/internal/checks"
+	"governor/internal/checkstui"
 	"governor/internal/extractor"
 	"governor/internal/isolation"
 	"governor/internal/model"
