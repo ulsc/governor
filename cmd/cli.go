@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -413,10 +414,12 @@ func printIsolateAuditSummaryFromHost(outDir string) error {
 
 func runChecks(args []string) error {
 	if len(args) == 0 {
-		return usageError("usage: governor checks <add|extract|list|validate|enable|disable> [flags]")
+		return usageError("usage: governor checks <init|add|extract|list|validate|doctor|explain|enable|disable> [flags]")
 	}
 
 	switch args[0] {
+	case "init":
+		return runChecksInit(args[1:])
 	case "add":
 		return runChecksAdd(args[1:])
 	case "extract":
@@ -425,6 +428,10 @@ func runChecks(args []string) error {
 		return runChecksList(args[1:])
 	case "validate":
 		return runChecksValidate(args[1:])
+	case "doctor":
+		return runChecksDoctor(args[1:])
+	case "explain":
+		return runChecksExplain(args[1:])
 	case "enable":
 		return runChecksStatus(args[1:], checks.StatusEnabled)
 	case "disable":
@@ -434,18 +441,91 @@ func runChecks(args []string) error {
 	}
 }
 
+func runChecksInit(args []string) error {
+	fs := flag.NewFlagSet("checks init", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks in repo, otherwise ~/.governor/checks)")
+	templateID := fs.String("template", "", "Check template ID")
+	listTemplates := fs.Bool("list-templates", false, "List available templates and exit")
+	nonInteractive := fs.Bool("non-interactive", false, "Disable interactive prompts")
+	overwrite := fs.Bool("overwrite", false, "Overwrite existing check file with same ID")
+
+	id := fs.String("id", "", "Check ID (slug)")
+	name := fs.String("name", "", "Check name")
+	description := fs.String("description", "", "Check description")
+	instructions := fs.String("instructions", "", "Check instructions text")
+	instructionsFile := fs.String("instructions-file", "", "Path to instructions file")
+	statusRaw := fs.String("status", "draft", "Check status: draft|enabled|disabled")
+	severityHint := fs.String("severity-hint", "", "Severity hint: critical|high|medium|low|info")
+	confidenceHint := fs.Float64("confidence-hint", -1, "Confidence hint (0..1), default from template")
+
+	var includeGlobs listFlag
+	var excludeGlobs listFlag
+	var categories listFlag
+	fs.Var(&includeGlobs, "include-glob", "Include glob (repeatable or comma-separated)")
+	fs.Var(&excludeGlobs, "exclude-glob", "Exclude glob (repeatable or comma-separated)")
+	fs.Var(&categories, "category", "Category hint (repeatable or comma-separated)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("checks init does not accept positional args")
+	}
+	if *listTemplates {
+		for _, template := range checks.Templates() {
+			fmt.Printf("%-24s %s\n", template.ID, template.Name)
+		}
+		return nil
+	}
+	if strings.TrimSpace(*instructions) != "" && strings.TrimSpace(*instructionsFile) != "" {
+		return errors.New("use either --instructions or --instructions-file")
+	}
+
+	input := checkCreateInput{
+		ChecksDir:         *checksDir,
+		TemplateID:        strings.TrimSpace(*templateID),
+		ID:                strings.TrimSpace(*id),
+		Name:              strings.TrimSpace(*name),
+		Description:       strings.TrimSpace(*description),
+		Instructions:      strings.TrimSpace(*instructions),
+		InstructionsFile:  strings.TrimSpace(*instructionsFile),
+		StatusRaw:         strings.TrimSpace(*statusRaw),
+		SeverityHint:      strings.TrimSpace(*severityHint),
+		ConfidenceHint:    *confidenceHint,
+		IncludeGlobs:      includeGlobs.Values(),
+		ExcludeGlobs:      excludeGlobs.Values(),
+		CategoriesHint:    categories.Values(),
+		Overwrite:         *overwrite,
+		Interactive:       !*nonInteractive && isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd()),
+		PromptForTemplate: strings.TrimSpace(*templateID) == "",
+	}
+
+	path, status, err := runCheckCreateFlow(input)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("created check: %s\n", path)
+	fmt.Printf("status: %s\n", status)
+	fmt.Println("next: governor checks doctor")
+	return nil
+}
+
 func runChecksAdd(args []string) error {
 	fs := flag.NewFlagSet("checks add", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 
 	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks in repo, otherwise ~/.governor/checks)")
+	templateID := fs.String("template", "blank", "Check template ID")
+	overwrite := fs.Bool("overwrite", false, "Overwrite existing check file with same ID")
 	id := fs.String("id", "", "Check ID (slug)")
 	name := fs.String("name", "", "Check name")
 	description := fs.String("description", "", "Check description")
 	instructions := fs.String("instructions", "", "Check instructions text")
 	instructionsFile := fs.String("instructions-file", "", "Path to instructions file")
 	severityHint := fs.String("severity-hint", "", "severity hint (critical|high|medium|low|info)")
-	confidenceHint := fs.Float64("confidence-hint", 0.8, "confidence hint (0..1)")
+	confidenceHint := fs.Float64("confidence-hint", -1, "confidence hint (0..1), default from template")
 
 	var includeGlobs listFlag
 	var excludeGlobs listFlag
@@ -476,42 +556,28 @@ func runChecksAdd(args []string) error {
 		}
 		instructionsText = strings.TrimSpace(string(b))
 	}
-	if instructionsText == "" {
-		return errors.New("instructions are required")
-	}
-
-	dir, err := checks.ResolveWriteDir(*checksDir)
-	if err != nil {
-		return err
-	}
-
-	def := checks.Definition{
-		APIVersion:   checks.APIVersion,
-		ID:           strings.TrimSpace(*id),
-		Name:         strings.TrimSpace(*name),
-		Status:       checks.StatusDraft,
-		Source:       checks.SourceCustom,
-		Description:  strings.TrimSpace(*description),
-		Instructions: instructionsText,
-		Scope: checks.Scope{
-			IncludeGlobs: includeGlobs.Values(),
-			ExcludeGlobs: excludeGlobs.Values(),
-		},
-		CategoriesHint: categories.Values(),
+	path, status, err := runCheckCreateFlow(checkCreateInput{
+		ChecksDir:      *checksDir,
+		TemplateID:     strings.TrimSpace(*templateID),
+		ID:             strings.TrimSpace(*id),
+		Name:           strings.TrimSpace(*name),
+		Description:    strings.TrimSpace(*description),
+		Instructions:   instructionsText,
+		StatusRaw:      "draft",
 		SeverityHint:   strings.TrimSpace(*severityHint),
 		ConfidenceHint: *confidenceHint,
-		Origin: checks.Origin{
-			Method: "manual",
-		},
-	}
-
-	path, err := checks.WriteDefinition(dir, def, false)
+		IncludeGlobs:   includeGlobs.Values(),
+		ExcludeGlobs:   excludeGlobs.Values(),
+		CategoriesHint: categories.Values(),
+		Overwrite:      *overwrite,
+		Interactive:    false,
+	})
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("created check: %s\n", path)
-	fmt.Println("status: draft")
+	fmt.Printf("status: %s\n", status)
 	return nil
 }
 
@@ -740,6 +806,337 @@ func runChecksStatus(args []string, status checks.Status) error {
 	return nil
 }
 
+func runChecksDoctor(args []string) error {
+	fs := flag.NewFlagSet("checks doctor", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks + ~/.governor/checks, repo first)")
+	format := fs.String("format", "text", "Output format: text|json")
+	strict := fs.Bool("strict", false, "Treat warnings as failures")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("checks doctor does not accept positional args")
+	}
+
+	outFormat := strings.ToLower(strings.TrimSpace(*format))
+	if outFormat != "text" && outFormat != "json" {
+		return errors.New("--format must be text or json")
+	}
+
+	dirs, err := checks.ResolveReadDirs(*checksDir)
+	if err != nil {
+		return err
+	}
+	report, err := checks.BuildDoctorReport(dirs)
+	if err != nil {
+		return err
+	}
+
+	if outFormat == "json" {
+		payload, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal checks doctor report: %w", err)
+		}
+		fmt.Println(string(payload))
+	} else {
+		fmt.Printf("searched dirs: %s\n", strings.Join(report.SearchedDirs, ", "))
+		fmt.Printf("effective checks: %d\n", len(report.Effective))
+		fmt.Printf("shadowed checks: %d\n", len(report.Shadowed))
+		fmt.Printf("diagnostics: error=%d warning=%d info=%d\n", report.Summary.Error, report.Summary.Warning, report.Summary.Info)
+
+		if len(report.Diagnostics) > 0 {
+			fmt.Println("")
+			fmt.Println("diagnostics:")
+			for _, diag := range report.Diagnostics {
+				location := diag.Path
+				if location == "" {
+					location = "(no path)"
+				}
+				idSuffix := ""
+				if strings.TrimSpace(diag.CheckID) != "" {
+					idSuffix = " id=" + diag.CheckID
+				}
+				fmt.Printf("- [%s] %s%s: %s\n", strings.ToUpper(string(diag.Severity)), location, idSuffix, diag.Message)
+				if strings.TrimSpace(diag.Hint) != "" {
+					fmt.Printf("  hint: %s\n", diag.Hint)
+				}
+			}
+		}
+	}
+
+	if report.Summary.Error > 0 {
+		return fmt.Errorf("checks doctor found %d error(s)", report.Summary.Error)
+	}
+	if *strict && report.Summary.Warning > 0 {
+		return fmt.Errorf("checks doctor strict mode failed with %d warning(s)", report.Summary.Warning)
+	}
+	return nil
+}
+
+func runChecksExplain(args []string) error {
+	fs := flag.NewFlagSet("checks explain", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks + ~/.governor/checks, repo first)")
+	format := fs.String("format", "text", "Output format: text|json")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 1 {
+		return errors.New("usage: governor checks explain <check-id> [--checks-dir <dir>] [--format text|json]")
+	}
+
+	outFormat := strings.ToLower(strings.TrimSpace(*format))
+	if outFormat != "text" && outFormat != "json" {
+		return errors.New("--format must be text or json")
+	}
+
+	checkID := strings.TrimSpace(fs.Args()[0])
+	dirs, err := checks.ResolveReadDirs(*checksDir)
+	if err != nil {
+		return err
+	}
+
+	result, err := checks.ExplainCheck(dirs, checkID)
+	if err != nil {
+		return err
+	}
+
+	if outFormat == "json" {
+		payload, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal checks explain output: %w", err)
+		}
+		fmt.Println(string(payload))
+	} else {
+		fmt.Printf("check id: %s\n", result.CheckID)
+		fmt.Printf("searched dirs: %s\n", strings.Join(result.SearchedDirs, ", "))
+		if result.Effective == nil {
+			fmt.Println("effective: (not found)")
+		} else {
+			fmt.Printf("effective path: %s\n", result.Effective.Path)
+			fmt.Printf("status: %s\n", result.Effective.Definition.Status)
+			fmt.Printf("name: %s\n", result.Effective.Definition.Name)
+			fmt.Printf("source: %s\n", result.Effective.Definition.Source)
+		}
+		if len(result.Shadowed) > 0 {
+			fmt.Printf("shadowed: %d\n", len(result.Shadowed))
+			for _, item := range result.Shadowed {
+				fmt.Printf("- %s\n", item.Path)
+			}
+		}
+		if len(result.Invalid) > 0 {
+			fmt.Printf("invalid candidates: %d\n", len(result.Invalid))
+			for _, item := range result.Invalid {
+				fmt.Printf("- %s: %s\n", item.Path, item.Error)
+			}
+		}
+	}
+
+	if result.Effective == nil {
+		return fmt.Errorf("check %q not found in: %s", result.CheckID, strings.Join(result.SearchedDirs, ", "))
+	}
+	return nil
+}
+
+type checkCreateInput struct {
+	ChecksDir        string
+	TemplateID       string
+	ID               string
+	Name             string
+	Description      string
+	Instructions     string
+	InstructionsFile string
+	StatusRaw        string
+	SeverityHint     string
+	ConfidenceHint   float64
+	IncludeGlobs     []string
+	ExcludeGlobs     []string
+	CategoriesHint   []string
+	Overwrite        bool
+
+	Interactive       bool
+	PromptForTemplate bool
+}
+
+func runCheckCreateFlow(input checkCreateInput) (string, checks.Status, error) {
+	input.TemplateID = strings.TrimSpace(strings.ToLower(input.TemplateID))
+	if input.TemplateID == "" {
+		input.TemplateID = "blank"
+	}
+
+	if input.InstructionsFile != "" && input.Instructions == "" {
+		b, err := os.ReadFile(input.InstructionsFile)
+		if err != nil {
+			return "", "", fmt.Errorf("read --instructions-file: %w", err)
+		}
+		input.Instructions = strings.TrimSpace(string(b))
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	if input.Interactive && input.PromptForTemplate {
+		fmt.Println("available templates:")
+		for _, tmpl := range checks.Templates() {
+			fmt.Printf("  - %-24s %s\n", tmpl.ID, tmpl.Name)
+		}
+		templateID, err := promptInput(reader, "Template ID", "blank")
+		if err != nil {
+			return "", "", err
+		}
+		input.TemplateID = strings.ToLower(strings.TrimSpace(templateID))
+		if input.TemplateID == "" {
+			input.TemplateID = "blank"
+		}
+	}
+
+	template, ok := checks.LookupTemplate(input.TemplateID)
+	if !ok {
+		return "", "", fmt.Errorf("unknown template %q (available: %s)", input.TemplateID, strings.Join(checks.TemplateIDs(), ", "))
+	}
+
+	if input.Interactive {
+		id, err := promptInput(reader, "Check ID (slug)", input.ID)
+		if err != nil {
+			return "", "", err
+		}
+		input.ID = strings.TrimSpace(id)
+
+		defaultName := input.Name
+		if defaultName == "" {
+			defaultName = input.ID
+		}
+		name, err := promptInput(reader, "Check name", defaultName)
+		if err != nil {
+			return "", "", err
+		}
+		input.Name = strings.TrimSpace(name)
+
+		defaultDescription := input.Description
+		if defaultDescription == "" {
+			defaultDescription = template.Description
+		}
+		description, err := promptInput(reader, "Description", defaultDescription)
+		if err != nil {
+			return "", "", err
+		}
+		input.Description = strings.TrimSpace(description)
+
+		defaultInstructions := input.Instructions
+		if defaultInstructions == "" {
+			defaultInstructions = template.Instructions
+		}
+		instructions, err := promptInput(reader, "Instructions", defaultInstructions)
+		if err != nil {
+			return "", "", err
+		}
+		input.Instructions = strings.TrimSpace(instructions)
+	}
+
+	status, err := checks.ParseStatus(input.StatusRaw)
+	if err != nil {
+		return "", "", fmt.Errorf("--status: %w", err)
+	}
+
+	id := strings.TrimSpace(input.ID)
+	if id == "" {
+		return "", "", errors.New("--id is required")
+	}
+
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		name = id
+	}
+
+	description := strings.TrimSpace(input.Description)
+	if description == "" {
+		description = template.Description
+	}
+
+	instructions := strings.TrimSpace(input.Instructions)
+	if instructions == "" {
+		instructions = strings.TrimSpace(template.Instructions)
+	}
+	if instructions == "" {
+		return "", "", errors.New("instructions are required")
+	}
+
+	categories := input.CategoriesHint
+	if len(categories) == 0 {
+		categories = append([]string{}, template.CategoriesHint...)
+	}
+	includeGlobs := input.IncludeGlobs
+	if len(includeGlobs) == 0 {
+		includeGlobs = append([]string{}, template.IncludeGlobs...)
+	}
+	excludeGlobs := input.ExcludeGlobs
+	if len(excludeGlobs) == 0 {
+		excludeGlobs = append([]string{}, template.ExcludeGlobs...)
+	}
+
+	severityHint := strings.TrimSpace(input.SeverityHint)
+	if severityHint == "" {
+		severityHint = template.SeverityHint
+	}
+	confidenceHint := input.ConfidenceHint
+	if confidenceHint < 0 {
+		confidenceHint = template.ConfidenceHint
+	}
+
+	dir, err := checks.ResolveWriteDir(input.ChecksDir)
+	if err != nil {
+		return "", "", err
+	}
+
+	def := checks.Definition{
+		APIVersion:     checks.APIVersion,
+		ID:             id,
+		Name:           name,
+		Status:         status,
+		Source:         checks.SourceCustom,
+		Description:    description,
+		Instructions:   instructions,
+		CategoriesHint: categories,
+		SeverityHint:   severityHint,
+		ConfidenceHint: confidenceHint,
+		Scope: checks.Scope{
+			IncludeGlobs: includeGlobs,
+			ExcludeGlobs: excludeGlobs,
+		},
+		Origin: checks.Origin{
+			Method: "manual",
+		},
+	}
+
+	path, err := checks.WriteDefinition(dir, def, input.Overwrite)
+	if err != nil {
+		return "", "", err
+	}
+	return path, status, nil
+}
+
+func promptInput(reader *bufio.Reader, label string, defaultValue string) (string, error) {
+	label = strings.TrimSpace(label)
+	defaultValue = strings.TrimSpace(defaultValue)
+	if defaultValue != "" {
+		fmt.Printf("%s [%s]: ", label, defaultValue)
+	} else {
+		fmt.Printf("%s: ", label)
+	}
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("read input for %q: %w", label, err)
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return defaultValue, nil
+	}
+	return line, nil
+}
+
 func normalizeExecutionModeFlag(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "sandboxed":
@@ -825,7 +1222,7 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  governor audit <path-or-zip> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
-	fmt.Println("  governor checks <add|extract|list|validate|enable|disable> [flags]")
+	fmt.Println("  governor checks <init|add|extract|list|validate|doctor|explain|enable|disable> [flags]")
 	fmt.Println("")
 	fmt.Println("Flags (audit):")
 	fmt.Println("  --out <dir>         Output directory (default ./.governor/runs/<timestamp>)")
