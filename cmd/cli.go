@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -58,8 +59,10 @@ func runAudit(args []string) error {
 	verbose := fs.Bool("verbose", false, "Enable verbose logs")
 	enableTUI := fs.Bool("tui", false, "Enable interactive terminal UI")
 	disableTUI := fs.Bool("no-tui", false, "Disable interactive terminal UI")
-	checksDir := fs.String("checks-dir", "", "Checks directory (default ~/.governor/checks)")
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks + ~/.governor/checks, repo first)")
 	noCustomChecks := fs.Bool("no-custom-checks", false, "Run built-in checks only")
+	keepWorkspaceError := fs.Bool("keep-workspace-error", false, "Retain staged workspace only when run ends with warning/failed status")
+	allowExistingOutDir := fs.Bool("allow-existing-out-dir", false, "Allow using an existing empty output directory (internal use)")
 
 	var onlyChecks listFlag
 	var skipChecks listFlag
@@ -145,10 +148,12 @@ func runAudit(args []string) error {
 		ExecutionMode: modeValue,
 		SandboxMode:   sandboxValue,
 
-		ChecksDir:      *checksDir,
-		NoCustomChecks: *noCustomChecks,
-		OnlyChecks:     onlyChecks.Values(),
-		SkipChecks:     skipChecks.Values(),
+		ChecksDir:            *checksDir,
+		NoCustomChecks:       *noCustomChecks,
+		OnlyChecks:           onlyChecks.Values(),
+		SkipChecks:           skipChecks.Values(),
+		KeepWorkspaceOnError: *keepWorkspaceError,
+		AllowExistingOutDir:  *allowExistingOutDir,
 	}
 
 	if useTUI {
@@ -204,22 +209,25 @@ func runIsolateAudit(args []string) error {
 	fs := flag.NewFlagSet("isolate audit", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 
-	out := fs.String("out", "", "Output directory for run artifacts (required in isolate mode)")
+	out := fs.String("out", "", "Output directory for run artifacts (default ./.governor/runs/<timestamp>)")
 	runtimeName := fs.String("runtime", "auto", "Container runtime: auto|docker|podman")
 	image := fs.String("image", isolation.DefaultImage, "Container image for isolated governor runner")
-	network := fs.String("network", "codex-only", "Network policy: codex-only|none")
-	pull := fs.String("pull", "if-missing", "Image pull policy: always|if-missing|never")
+	network := fs.String("network", "none", "Network policy: unrestricted|none")
+	pull := fs.String("pull", "never", "Image pull policy: always|if-missing|never")
 	cleanImage := fs.Bool("clean-image", false, "Remove runner image after execution")
-	authMode := fs.String("auth-mode", "auto", "Auth mode: auto|subscription|api-key")
+	authMode := fs.String("auth-mode", "subscription", "Auth mode: auto|subscription|api-key")
 	codexHome := fs.String("codex-home", "~/.codex", "Host codex home used for subscription auth bundle")
 
 	workers := fs.Int("workers", 3, "Max concurrent worker processes inside isolated run (1-3)")
+	executionMode := fs.String("execution-mode", "sandboxed", "Inner worker execution mode: sandboxed|host")
+	codexSandbox := fs.String("codex-sandbox", "read-only", "Inner sandbox mode (sandboxed execution): read-only|workspace-write|danger-full-access")
 	maxFiles := fs.Int("max-files", 20000, "Maximum included file count")
 	maxBytes := fs.Int64("max-bytes", 250*1024*1024, "Maximum included file bytes")
 	timeout := fs.Duration("timeout", 4*time.Minute, "Per-worker timeout")
 	verbose := fs.Bool("verbose", false, "Enable verbose logs")
 	checksDir := fs.String("checks-dir", "", "Checks directory mounted read-only (optional)")
 	noCustomChecks := fs.Bool("no-custom-checks", false, "Run built-in checks only")
+	keepWorkspaceError := fs.Bool("keep-workspace-error", false, "Retain staged workspace only when run ends with warning/failed status")
 
 	var onlyChecks listFlag
 	var skipChecks listFlag
@@ -262,10 +270,25 @@ func runIsolateAudit(args []string) error {
 	if err != nil {
 		return err
 	}
+	modeValue, err := normalizeExecutionModeFlag(*executionMode)
+	if err != nil {
+		return err
+	}
+	sandboxValue, err := normalizeSandboxModeFlag(*codexSandbox)
+	if err != nil {
+		return err
+	}
+	if modeValue == "host" {
+		sandboxValue = ""
+	}
+	outDir, err := resolveIsolateOutDir(*out, time.Now().UTC())
+	if err != nil {
+		return err
+	}
 
-	return isolation.RunAudit(context.Background(), isolation.AuditOptions{
+	if err := isolation.RunAudit(context.Background(), isolation.AuditOptions{
 		InputPath: positionalInput,
-		OutDir:    *out,
+		OutDir:    outDir,
 		ChecksDir: *checksDir,
 
 		Runtime:       runtimeValue,
@@ -277,16 +300,26 @@ func runIsolateAudit(args []string) error {
 		AuthMode:  authValue,
 		CodexHome: strings.TrimSpace(*codexHome),
 
-		Workers:  *workers,
-		MaxFiles: *maxFiles,
-		MaxBytes: *maxBytes,
-		Timeout:  *timeout,
-		Verbose:  *verbose,
+		Workers:       *workers,
+		ExecutionMode: modeValue,
+		SandboxMode:   sandboxValue,
+		MaxFiles:      *maxFiles,
+		MaxBytes:      *maxBytes,
+		Timeout:       *timeout,
+		Verbose:       *verbose,
 
-		NoCustomChecks: *noCustomChecks,
-		OnlyChecks:     onlyChecks.Values(),
-		SkipChecks:     skipChecks.Values(),
-	})
+		NoCustomChecks:       *noCustomChecks,
+		OnlyChecks:           onlyChecks.Values(),
+		SkipChecks:           skipChecks.Values(),
+		KeepWorkspaceOnError: *keepWorkspaceError,
+	}); err != nil {
+		return err
+	}
+	if err := printIsolateAuditSummaryFromHost(outDir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		printIsolateArtifactPaths(outDir)
+	}
+	return nil
 }
 
 func printAuditSummary(report model.AuditReport, paths app.ArtifactPaths) {
@@ -334,6 +367,50 @@ func printAuditSummary(report model.AuditReport, paths app.ArtifactPaths) {
 	}
 }
 
+func resolveIsolateOutDir(raw string, now time.Time) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw != "" {
+		return filepath.Abs(raw)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve cwd: %w", err)
+	}
+	return filepath.Join(cwd, ".governor", "runs", now.UTC().Format("20060102-150405")), nil
+}
+
+func isolateArtifactPaths(outDir string) app.ArtifactPaths {
+	outDir = filepath.Clean(outDir)
+	return app.ArtifactPaths{
+		RunDir:       outDir,
+		MarkdownPath: filepath.Join(outDir, "audit.md"),
+		JSONPath:     filepath.Join(outDir, "audit.json"),
+		HTMLPath:     filepath.Join(outDir, "audit.html"),
+	}
+}
+
+func printIsolateArtifactPaths(outDir string) {
+	paths := isolateArtifactPaths(outDir)
+	fmt.Printf("artifacts dir:  %s\n", paths.RunDir)
+	fmt.Printf("audit markdown: %s\n", filepath.Clean(paths.MarkdownPath))
+	fmt.Printf("audit json:     %s\n", filepath.Clean(paths.JSONPath))
+	fmt.Printf("audit html:     %s\n", filepath.Clean(paths.HTMLPath))
+}
+
+func printIsolateAuditSummaryFromHost(outDir string) error {
+	paths := isolateArtifactPaths(outDir)
+	raw, err := os.ReadFile(paths.JSONPath)
+	if err != nil {
+		return fmt.Errorf("read isolated report %s: %w", paths.JSONPath, err)
+	}
+	var report model.AuditReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return fmt.Errorf("parse isolated report %s: %w", paths.JSONPath, err)
+	}
+	printAuditSummary(report, paths)
+	return nil
+}
+
 func runChecks(args []string) error {
 	if len(args) == 0 {
 		return usageError("usage: governor checks <add|extract|list|validate|enable|disable> [flags]")
@@ -361,7 +438,7 @@ func runChecksAdd(args []string) error {
 	fs := flag.NewFlagSet("checks add", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 
-	checksDir := fs.String("checks-dir", "", "Checks directory (default ~/.governor/checks)")
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks in repo, otherwise ~/.governor/checks)")
 	id := fs.String("id", "", "Check ID (slug)")
 	name := fs.String("name", "", "Check name")
 	description := fs.String("description", "", "Check description")
@@ -403,7 +480,7 @@ func runChecksAdd(args []string) error {
 		return errors.New("instructions are required")
 	}
 
-	dir, err := checks.ResolveDir(*checksDir)
+	dir, err := checks.ResolveWriteDir(*checksDir)
 	if err != nil {
 		return err
 	}
@@ -442,7 +519,7 @@ func runChecksExtract(args []string) error {
 	fs := flag.NewFlagSet("checks extract", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 
-	checksDir := fs.String("checks-dir", "", "Checks directory (default ~/.governor/checks)")
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks in repo, otherwise ~/.governor/checks)")
 	codexBin := fs.String("codex-bin", "codex", "Codex executable path")
 	allowCustomCodexBin := fs.Bool("allow-custom-codex-bin", false, "Allow non-default codex binary path (for testing only)")
 	executionMode := fs.String("execution-mode", "sandboxed", "Codex execution mode: sandboxed|host")
@@ -524,7 +601,7 @@ func runChecksList(args []string) error {
 	fs := flag.NewFlagSet("checks list", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 
-	checksDir := fs.String("checks-dir", "", "Checks directory (default ~/.governor/checks)")
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks + ~/.governor/checks, repo first)")
 	statusFilter := fs.String("status", "", "status filter: draft|enabled|disabled")
 	sourceFilter := fs.String("source", "", "source filter: builtin|custom")
 	includeBuiltins := fs.Bool("include-builtins", true, "Include built-in checks")
@@ -536,11 +613,11 @@ func runChecksList(args []string) error {
 		return errors.New("checks list does not accept positional args")
 	}
 
-	dir, err := checks.ResolveDir(*checksDir)
+	dirs, err := checks.ResolveReadDirs(*checksDir)
 	if err != nil {
 		return err
 	}
-	customDefs, warnings, err := checks.LoadCustomDir(dir)
+	customDefs, warnings, err := checks.LoadCustomDirs(dirs)
 	if err != nil {
 		return err
 	}
@@ -583,7 +660,7 @@ func runChecksValidate(args []string) error {
 	fs := flag.NewFlagSet("checks validate", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 
-	checksDir := fs.String("checks-dir", "", "Checks directory (default ~/.governor/checks)")
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks + ~/.governor/checks, repo first)")
 	includeBuiltins := fs.Bool("include-builtins", true, "Include built-in checks in duplicate-ID validation")
 
 	if err := fs.Parse(args); err != nil {
@@ -593,11 +670,11 @@ func runChecksValidate(args []string) error {
 		return errors.New("checks validate does not accept positional args")
 	}
 
-	dir, err := checks.ResolveDir(*checksDir)
+	dirs, err := checks.ResolveReadDirs(*checksDir)
 	if err != nil {
 		return err
 	}
-	customDefs, warnings, err := checks.LoadCustomDir(dir)
+	customDefs, warnings, err := checks.LoadCustomDirs(dirs)
 	if err != nil {
 		return err
 	}
@@ -628,7 +705,7 @@ func runChecksStatus(args []string, status checks.Status) error {
 	fs := flag.NewFlagSet("checks status", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 
-	checksDir := fs.String("checks-dir", "", "Checks directory (default ~/.governor/checks)")
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks + ~/.governor/checks, repo first)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -637,13 +714,25 @@ func runChecksStatus(args []string, status checks.Status) error {
 	}
 	id := fs.Args()[0]
 
-	dir, err := checks.ResolveDir(*checksDir)
-	if err != nil {
-		return err
-	}
-	path, err := checks.UpdateStatus(dir, id, status)
-	if err != nil {
-		return err
+	var path string
+	if strings.TrimSpace(*checksDir) != "" {
+		dir, err := checks.ResolveWriteDir(*checksDir)
+		if err != nil {
+			return err
+		}
+		path, err = checks.UpdateStatus(dir, id, status)
+		if err != nil {
+			return err
+		}
+	} else {
+		dirs, err := checks.ResolveReadDirs("")
+		if err != nil {
+			return err
+		}
+		path, err = checks.UpdateStatusInDirs(dirs, id, status)
+		if err != nil {
+			return err
+		}
 	}
 
 	fmt.Printf("updated %s -> %s\n", id, status)
@@ -677,12 +766,12 @@ func normalizeIsolationRuntimeFlag(raw string) (isolation.Runtime, error) {
 
 func normalizeIsolationNetworkFlag(raw string) (isolation.NetworkPolicy, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "codex-only":
-		return isolation.NetworkCodexOnly, nil
+	case "unrestricted":
+		return isolation.NetworkUnrestricted, nil
 	case "none":
 		return isolation.NetworkNone, nil
 	default:
-		return "", errors.New("--network must be codex-only or none")
+		return "", errors.New("--network must be unrestricted or none")
 	}
 }
 
@@ -749,27 +838,31 @@ func printUsage() {
 	fmt.Println("  --max-bytes <n>     Included file bytes cap (default 262144000)")
 	fmt.Println("  --timeout <dur>     Per-worker timeout (default 4m)")
 	fmt.Println("  --verbose           Verbose execution logs")
-	fmt.Println("  --checks-dir <dir>  Custom checks directory (default ~/.governor/checks)")
+	fmt.Println("  --checks-dir <dir>  Custom checks dir (default ./.governor/checks + ~/.governor/checks, repo first)")
 	fmt.Println("  --only-check <id>   Run only specified check ID (repeatable)")
 	fmt.Println("  --skip-check <id>   Skip specified check ID (repeatable)")
 	fmt.Println("  --no-custom-checks  Disable custom check loading")
+	fmt.Println("  --keep-workspace-error  Retain staged workspace on warning/failed runs (default deletes)")
 	fmt.Println("  --tui               Enable interactive terminal UI")
 	fmt.Println("  --no-tui            Disable interactive terminal UI")
 	fmt.Println("")
 	fmt.Println("Flags (isolate audit):")
-	fmt.Println("  --out <dir>         Output directory for artifacts (required)")
+	fmt.Println("  --out <dir>         Output directory for artifacts (default ./.governor/runs/<timestamp>)")
 	fmt.Println("  --runtime <name>    Container runtime: auto|docker|podman (default auto)")
 	fmt.Println("  --image <ref>       Runner image (default governor-runner:local)")
-	fmt.Println("  --network <mode>    Network policy: codex-only|none (default codex-only)")
-	fmt.Println("  --pull <policy>     Image pull policy: always|if-missing|never (default if-missing)")
+	fmt.Println("  --network <mode>    Network policy: unrestricted|none (default none)")
+	fmt.Println("  --pull <policy>     Image pull policy: always|if-missing|never (default never)")
 	fmt.Println("  --clean-image       Remove runner image after run")
-	fmt.Println("  --auth-mode <mode>  Auth mode: auto|subscription|api-key (default auto)")
+	fmt.Println("  --auth-mode <mode>  Auth mode: auto|subscription|api-key (default subscription)")
 	fmt.Println("  --codex-home <dir>  Host codex home for subscription auth bundle (default ~/.codex)")
+	fmt.Println("  --execution-mode <sandboxed|host>  Inner worker execution mode (default sandboxed)")
+	fmt.Println("  --codex-sandbox <read-only|workspace-write|danger-full-access>  Inner sandbox mode (default read-only)")
 	fmt.Println("  --workers <1-3>     Max worker processes inside isolated run (default 3)")
 	fmt.Println("  --checks-dir <dir>  Mount custom checks read-only into isolated run")
 	fmt.Println("  --only-check <id>   Run only specified check ID (repeatable)")
 	fmt.Println("  --skip-check <id>   Skip specified check ID (repeatable)")
 	fmt.Println("  --no-custom-checks  Disable custom check loading")
+	fmt.Println("  --keep-workspace-error  Retain staged workspace on warning/failed runs (default deletes)")
 }
 
 type listFlag struct {

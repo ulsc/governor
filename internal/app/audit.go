@@ -16,6 +16,7 @@ import (
 	"governor/internal/prompt"
 	"governor/internal/redact"
 	reportpkg "governor/internal/report"
+	"governor/internal/safefile"
 	"governor/internal/worker"
 )
 
@@ -36,9 +37,11 @@ type AuditOptions struct {
 	Progress      progress.Sink
 	ChecksDir     string
 
-	NoCustomChecks bool
-	OnlyChecks     []string
-	SkipChecks     []string
+	NoCustomChecks       bool
+	OnlyChecks           []string
+	SkipChecks           []string
+	KeepWorkspaceOnError bool
+	AllowExistingOutDir  bool
 }
 
 type ArtifactPaths struct {
@@ -106,8 +109,13 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 		err = runErr
 		return
 	}
-	if mkErr := os.MkdirAll(runDir, 0o700); mkErr != nil {
-		err = fmt.Errorf("create run dir: %w", mkErr)
+	if opts.AllowExistingOutDir {
+		runDir, runErr = safefile.EnsureDir(runDir, 0o700, true)
+	} else {
+		runDir, runErr = safefile.EnsureFreshDir(runDir, 0o700)
+	}
+	if runErr != nil {
+		err = fmt.Errorf("create run dir: %w", runErr)
 		return
 	}
 
@@ -121,7 +129,21 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 		err = stageErr
 		return
 	}
-	defer func() { _ = stage.Cleanup() }()
+	defer func() {
+		if !shouldCleanupWorkspace(err, report.Errors, opts.KeepWorkspaceOnError) {
+			return
+		}
+		if cleanupErr := stage.Cleanup(); cleanupErr != nil {
+			msg := fmt.Sprintf("cleanup staged workspace: %v", cleanupErr)
+			sink.Emit(progress.Event{
+				Type:    progress.EventRunWarning,
+				RunID:   runID,
+				Status:  "warning",
+				Message: msg,
+			})
+			fmt.Fprintf(os.Stderr, "[governor] warning: %s\n", msg)
+		}
+	}()
 
 	manifestPath := filepath.Join(runDir, "manifest.json")
 	if writeManifestErr := intake.WriteManifest(manifestPath, stage.Manifest); writeManifestErr != nil {
@@ -129,13 +151,13 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 		return
 	}
 
-	checksDir, dirErr := checks.ResolveDir(opts.ChecksDir)
+	checksDirs, dirErr := checks.ResolveReadDirs(opts.ChecksDir)
 	if dirErr != nil {
 		err = dirErr
 		return
 	}
 
-	customDefs, checkWarnings, loadErr := checks.LoadCustomDir(checksDir)
+	customDefs, checkWarnings, loadErr := checks.LoadCustomDirs(checksDirs)
 	if loadErr != nil {
 		err = loadErr
 		return
@@ -293,6 +315,15 @@ func resolveRunDir(out string, runID string) (string, error) {
 		return "", fmt.Errorf("resolve cwd: %w", err)
 	}
 	return filepath.Join(cwd, ".governor", "runs", runID), nil
+}
+
+func shouldCleanupWorkspace(runErr error, runWarnings []string, keepWorkspaceOnError bool) bool {
+	if keepWorkspaceOnError {
+		if runErr != nil || len(runWarnings) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func redactFindings(in []model.Finding) []model.Finding {
