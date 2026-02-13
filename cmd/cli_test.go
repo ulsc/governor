@@ -138,6 +138,51 @@ func TestPrintUsage_IncludesKeepWorkspaceErrorFlag(t *testing.T) {
 	if !strings.Contains(out, "--keep-workspace-error") {
 		t.Fatalf("expected usage to include keep-workspace-error flag, got:\n%s", out)
 	}
+	if !strings.Contains(out, "checks <init|add|extract|list|validate|doctor|explain|enable|disable>") {
+		t.Fatalf("expected usage to include checks init/doctor/explain commands, got:\n%s", out)
+	}
+}
+
+func TestRunChecksInit_NonInteractiveCreatesTemplateCheck(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+
+	restoreWD := setWorkingDir(t, repoRoot)
+	defer restoreWD()
+
+	out := captureStdout(t, func() {
+		err := runChecksInit([]string{
+			"--non-interactive",
+			"--template", "authz-missing-checks",
+			"--id", "authz-test",
+			"--name", "Authz Test",
+			"--status", "enabled",
+		})
+		if err != nil {
+			t.Fatalf("runChecksInit failed: %v", err)
+		}
+	})
+
+	path := filepath.Join(repoRoot, ".governor", "checks", "authz-test.check.yaml")
+	def, err := checks.ReadDefinition(path)
+	if err != nil {
+		t.Fatalf("read created check: %v", err)
+	}
+	if def.Status != checks.StatusEnabled {
+		t.Fatalf("expected status enabled, got %s", def.Status)
+	}
+	if def.Name != "Authz Test" {
+		t.Fatalf("expected name to be preserved, got %q", def.Name)
+	}
+	if !strings.Contains(def.Instructions, "authorization") {
+		t.Fatalf("expected template instructions to be applied, got %q", def.Instructions)
+	}
+	if !strings.Contains(out, "created check:") || !strings.Contains(out, "next: governor checks doctor") {
+		t.Fatalf("expected init output to include creation hints, got:\n%s", out)
+	}
 }
 
 func TestRunChecksStatus_DefaultPrefersRepoCheck(t *testing.T) {
