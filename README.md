@@ -251,8 +251,33 @@ Common diagnostic labels in worker/preflight errors:
 ## Checks Command
 
 ```bash
-governor checks <init|add|extract|list|validate|doctor|explain|enable|disable>
+governor checks [<tui|init|add|extract|list|validate|doctor|explain|enable|disable>]
 ```
+
+Default behavior:
+- Interactive terminal: `governor checks` opens the checks workspace TUI.
+- Non-interactive shell (CI/pipes): `governor checks` falls back to `governor checks list`.
+
+### `checks tui`
+
+Interactive checks workspace for enterprise operations.
+
+```bash
+governor checks
+governor checks tui
+```
+
+Key actions:
+- `j`/`k`: move selection
+- `/`: search
+- `s`: cycle status filter
+- `o`: cycle source filter
+- `1..5`: sort by id/status/source/severity/path
+- `e` / `d`: enable/disable selected mutable custom check (with confirmation)
+- `n`: duplicate selected check as draft
+- `p`: show selected check path
+- `r`: refresh from disk
+- `h`: toggle details pane
 
 ### `checks init` (recommended)
 
@@ -427,12 +452,14 @@ Notes:
 - `docs/checks/templates.md`: template catalog and usage guidance.
 - `docs/checks/troubleshooting.md`: resolving common check issues quickly.
 - `docs/checks/reference.md`: schema/reference for check fields and behaviors.
+- `docs/checks/tui.md`: interactive checks workspace usage and keymap.
 
 ## TUI and Progress
 
 - Interactive terminal: TUI is enabled by default.
 - Non-interactive (pipe/CI): plain progress logs are used.
-- TUI shows check-level status: pending/running/completed, durations, and recent events.
+- Audit TUI shows worker-level status, durations, error badges, and a filterable/pauseable events panel.
+- Controls: `d` toggle details, `p` pause/resume events panel, `f` cycle event-track filter, `q` close when run completes.
 
 ## Output Artifacts
 

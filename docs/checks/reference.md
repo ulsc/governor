@@ -36,6 +36,8 @@
 ## Useful Commands
 
 ```bash
+governor checks
+governor checks tui
 governor checks init --list-templates
 governor checks validate
 governor checks doctor

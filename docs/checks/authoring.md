@@ -4,6 +4,12 @@ This guide is for creating high-signal Governor checks quickly and safely.
 
 ## Fast Path
 
+0. Open the checks workspace to inspect/triage:
+
+```bash
+governor checks
+```
+
 1. Initialize a check from template:
 
 ```bash
