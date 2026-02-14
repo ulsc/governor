@@ -439,6 +439,253 @@ func TestClassifyCodexProbeFailure_Stream(t *testing.T) {
 	}
 }
 
+// ── shellQuote ──────────────────────────────────────────────────────
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", "''"},
+		{"simple", "hello", "'hello'"},
+		{"with single quotes", "it's", `'it'"'"'s'`},
+		{"special chars", "foo bar;baz", "'foo bar;baz'"},
+		{"backslash", `a\b`, `'a\b'`},
+		{"newline", "a\nb", "'a\nb'"},
+		{"dollar sign", "$HOME", "'$HOME'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shellQuote(tt.in)
+			if got != tt.want {
+				t.Errorf("shellQuote(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// ── shellJoin ───────────────────────────────────────────────────────
+
+func TestShellJoin(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{"empty slice", nil, ""},
+		{"single element", []string{"hello"}, "'hello'"},
+		{"multiple elements", []string{"a", "b c", "d"}, "'a' 'b c' 'd'"},
+		{"elements with quotes", []string{"it's", "fine"}, `'it'"'"'s' 'fine'`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shellJoin(tt.in)
+			if got != tt.want {
+				t.Errorf("shellJoin(%v) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// ── envToMap ────────────────────────────────────────────────────────
+
+func TestEnvToMap(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want map[string]string
+	}{
+		{"valid pairs", []string{"A=1", "B=2"}, map[string]string{"A": "1", "B": "2"}},
+		{"value with equals", []string{"A=1=2=3"}, map[string]string{"A": "1=2=3"}},
+		{"no equals skipped", []string{"INVALID", "A=1"}, map[string]string{"A": "1"}},
+		{"empty key skipped", []string{"=value"}, map[string]string{}},
+		{"duplicates last wins", []string{"A=1", "A=2"}, map[string]string{"A": "2"}},
+		{"empty slice", nil, map[string]string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := envToMap(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("envToMap() len = %d, want %d", len(got), len(tt.want))
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("envToMap()[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+// ── normalizeExecutionMode ──────────────────────────────────────────
+
+func TestNormalizeExecutionMode(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"sandboxed", "sandboxed"},
+		{"host", "host"},
+		{"  SANDBOXED  ", "sandboxed"},
+		{"  Host  ", "host"},
+		{"invalid", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got := normalizeExecutionMode(tt.in)
+			if got != tt.want {
+				t.Errorf("normalizeExecutionMode(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// ── normalizeSandboxMode ────────────────────────────────────────────
+
+func TestNormalizeSandboxMode(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"read-only", "read-only"},
+		{"workspace-write", "workspace-write"},
+		{"danger-full-access", "danger-full-access"},
+		{"  READ-ONLY  ", "read-only"},
+		{"  Workspace-Write  ", "workspace-write"},
+		{"invalid", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got := normalizeSandboxMode(tt.in)
+			if got != tt.want {
+				t.Errorf("normalizeSandboxMode(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// ── sanitizeErr ─────────────────────────────────────────────────────
+
+func TestSanitizeErr(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"simple", errors.New("oops"), "oops"},
+		{"newlines", errors.New("line1\nline2\rline3"), "line1 line2 line3"},
+		{"empty message", errors.New(""), "unknown error"},
+		{"whitespace only", errors.New("   "), "unknown error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeErr(tt.err)
+			if got != tt.want {
+				t.Errorf("sanitizeErr() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeErr_Truncation(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	got := sanitizeErr(errors.New(long))
+	if len(got) != 303 { // 300 + "..."
+		t.Errorf("expected truncation to 303 chars, got %d", len(got))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("expected ... suffix, got %q", got[len(got)-10:])
+	}
+}
+
+// ── hasAnyPattern ───────────────────────────────────────────────────
+
+func TestHasAnyPattern(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		patterns []string
+		want     bool
+	}{
+		{"match first", "certificate verify failed", []string{"certificate verify failed", "timeout"}, true},
+		{"match second", "connection timed out", []string{"certificate", "timed out"}, true},
+		{"no match", "everything is fine", []string{"error", "failed"}, false},
+		{"empty text", "", []string{"something"}, false},
+		{"empty patterns", "text", nil, false},
+		{"case sensitive", "ERROR", []string{"error"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasAnyPattern(tt.text, tt.patterns...)
+			if got != tt.want {
+				t.Errorf("hasAnyPattern(%q, %v) = %v, want %v", tt.text, tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
+// ── isLikelyLocalBaseURL ────────────────────────────────────────────
+
+func TestIsLikelyLocalBaseURL(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"http://localhost:8080", true},
+		{"http://127.0.0.1:11434", true},
+		{"https://api.openai.com", false},
+		{"", false},
+		{"   ", false},
+		{"http://localhost", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			got := isLikelyLocalBaseURL(tt.url)
+			if got != tt.want {
+				t.Errorf("isLikelyLocalBaseURL(%q) = %v, want %v", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+// ── extractTrailingJSON ─────────────────────────────────────────────
+
+func TestExtractTrailingJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     []byte
+		want    string
+		wantErr bool
+	}{
+		{"simple json", []byte(`{"ok":true}`), `{"ok":true}`, false},
+		{"prefix logs", []byte("[governor] debug\n{\"ok\":true}"), `{"ok":true}`, false},
+		{"no json", []byte("just text"), "", true},
+		{"empty", []byte(""), "", true},
+		{"trailing json after logs", []byte("log line\n{\"status\":\"ok\",\"count\":5}"), `{"status":"ok","count":5}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := extractTrailingJSON(tt.raw)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("extractTrailingJSON() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAppendWarningsToAuditArtifacts_AppendsDedupedWarnings(t *testing.T) {
 	outDir := t.TempDir()
 	jsonPath := filepath.Join(outDir, "audit.json")
