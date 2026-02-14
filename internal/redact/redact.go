@@ -5,7 +5,7 @@ import "regexp"
 var (
 	privateKeyPattern = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
 	bearerPattern     = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}`)
-	tokenAssign       = regexp.MustCompile(`(?i)\b(api[_-]?key|secret|token|password|passwd|pwd)\b(\s*[:=]\s*)(["']?)([A-Za-z0-9._~+/=-]{8,})(["']?)`)
+	tokenAssign       = regexp.MustCompile(`(?i)("?)([A-Za-z0-9_-]*(?:api[_-]?key|secret[_-]?(?:key|access[_-]?key)?|token|password|passwd|pwd))("?)(\s*[:=]\s*)(["']?)([A-Za-z0-9._~+/=-]{8,})(["']?)`)
 	awsAccessKey      = regexp.MustCompile(`\b(A3T|AKIA|ASIA|AGPA|AIDA|ANPA|ANVA|AROA|AIPA)[0-9A-Z]{16}\b`)
 	githubToken       = regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}\b`)
 
@@ -33,7 +33,7 @@ func Text(in string) string {
 	out = npmToken.ReplaceAllString(out, "[REDACTED_NPM_TOKEN]")
 	out = genericBase64.ReplaceAllString(out, "[REDACTED_BASE64_SECRET]")
 	// tokenAssign is applied last — more specific patterns above take precedence.
-	out = tokenAssign.ReplaceAllString(out, `${1}${2}${3}[REDACTED]${5}`)
+	out = tokenAssign.ReplaceAllString(out, `${1}${2}${3}${4}${5}[REDACTED]${7}`)
 	return out
 }
 
