@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"governor/internal/checks"
@@ -467,6 +468,26 @@ func TestTestFileExclusion_ScopeAllowsRejectsTestPaths(t *testing.T) {
 				t.Errorf("scopeAllows(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+// ── ReDoS timeout protection ────────────────────────────────────────
+
+func TestRegexMatchesWithTimeout_NormalRegexCompletes(t *testing.T) {
+	re := regexp.MustCompile(`(?i)password\s*[:=]\s*["']`)
+	content := `password = "secret123"`
+	matches := regexMatchesWithTimeout(re, content, 5, "test-detector")
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(matches))
+	}
+}
+
+func TestRegexMatchesWithTimeout_NoMatchReturnsEmpty(t *testing.T) {
+	re := regexp.MustCompile(`(?i)password\s*[:=]\s*["']`)
+	content := `this has no secrets`
+	matches := regexMatchesWithTimeout(re, content, 5, "test-detector")
+	if len(matches) != 0 {
+		t.Fatalf("expected 0 matches, got %d", len(matches))
 	}
 }
 

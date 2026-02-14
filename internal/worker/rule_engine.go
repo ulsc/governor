@@ -17,6 +17,7 @@ const (
 	defaultDetectorMaxMatches = 5
 	defaultRuleConfidence     = 0.7
 	maxRuleFileBytes          = 2 * 1024 * 1024
+	regexMatchTimeout         = 5 * time.Second
 )
 
 type compiledDetector struct {
@@ -165,7 +166,28 @@ func compileDetectors(detectors []checks.RuleDetector) ([]compiledDetector, erro
 func detectorMatches(detector compiledDetector, content string, maxMatches int) [][2]int {
 	switch detector.detector.Kind {
 	case checks.RuleDetectorRegex:
-		raw := detector.regex.FindAllStringIndex(content, maxMatches)
+		return regexMatchesWithTimeout(detector.regex, content, maxMatches, detector.detector.ID)
+	case checks.RuleDetectorContains:
+		return containsMatches(content, detector.pattern, detector.detector.CaseSensitive, maxMatches)
+	default:
+		return nil
+	}
+}
+
+func regexMatchesWithTimeout(re *regexp.Regexp, content string, maxMatches int, detectorID string) [][2]int {
+	type result struct {
+		matches [][2]int
+	}
+	ch := make(chan result, 1)
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[governor] warning: regex panic in detector %s: %v\n", detectorID, r)
+				ch <- result{matches: nil}
+			}
+		}()
+		raw := re.FindAllStringIndex(content, maxMatches)
 		out := make([][2]int, 0, len(raw))
 		for _, pair := range raw {
 			if len(pair) != 2 {
@@ -173,10 +195,14 @@ func detectorMatches(detector compiledDetector, content string, maxMatches int) 
 			}
 			out = append(out, [2]int{pair[0], pair[1]})
 		}
-		return out
-	case checks.RuleDetectorContains:
-		return containsMatches(content, detector.pattern, detector.detector.CaseSensitive, maxMatches)
-	default:
+		ch <- result{matches: out}
+	}()
+
+	select {
+	case res := <-ch:
+		return res.matches
+	case <-time.After(regexMatchTimeout):
+		fmt.Fprintf(os.Stderr, "[governor] warning: regex match timed out after %s for detector %s\n", regexMatchTimeout, detectorID)
 		return nil
 	}
 }
