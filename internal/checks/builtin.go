@@ -672,5 +672,67 @@ Note: Focus on endpoints that are clearly sensitive or expensive. Not every endp
 				Method: "builtin",
 			},
 		},
+		{
+			APIVersion:  APIVersion,
+			ID:          "xss",
+			Name:        "Cross-Site Scripting (XSS)",
+			Status:      StatusEnabled,
+			Source:      SourceBuiltin,
+			Engine:      EngineAI,
+			Description: "Identifies cross-site scripting vulnerabilities where untrusted data is rendered " +
+				"in HTML without proper escaping or sanitization.",
+			Instructions: `Track focus: cross-site scripting (XSS)
+- Direct use of innerHTML, outerHTML, document.write() with user-controlled data
+- React dangerouslySetInnerHTML with unsanitized input
+- Template engines using unescaped output (|safe in Jinja2, {!! !!} in Blade, <%- in EJS, != in Pug)
+- Reflected input rendered back in HTML responses without encoding
+- Missing Content-Security-Policy headers or overly permissive CSP (unsafe-inline, unsafe-eval)
+- DOM-based XSS via location.hash, location.search, document.referrer flowing into DOM sinks
+- SVG/MathML injection vectors in user-generated content
+- Stored XSS patterns where database content is rendered without escaping`,
+			CategoriesHint: []string{"xss", "input_validation"},
+			SeverityHint:   "high",
+			ConfidenceHint: 0.75,
+			Scope: Scope{
+				IncludeGlobs: []string{
+					"**/*.html", "**/*.htm", "**/*.jsx", "**/*.tsx", "**/*.js", "**/*.ts",
+					"**/*.py", "**/*.rb", "**/*.erb", "**/*.php", "**/*.vue", "**/*.svelte",
+				},
+			},
+			Origin: Origin{
+				Method: "builtin",
+			},
+		},
+		{
+			APIVersion:  APIVersion,
+			ID:          "csrf",
+			Name:        "Cross-Site Request Forgery (CSRF)",
+			Status:      StatusEnabled,
+			Source:      SourceBuiltin,
+			Engine:      EngineAI,
+			Description: "Identifies missing or inadequate CSRF protections on state-changing endpoints, " +
+				"allowing attackers to perform actions on behalf of authenticated users.",
+			Instructions: `Track focus: cross-site request forgery (CSRF)
+- State-changing endpoints (POST, PUT, DELETE, PATCH) without CSRF token validation
+- Forms missing hidden CSRF token fields or missing csrf_token/csrfmiddlewaretoken
+- Missing or disabled CSRF middleware (e.g., @csrf_exempt in Django, csurf not applied in Express)
+- Cookie configuration missing SameSite attribute or using SameSite=None without Secure
+- REST APIs relying solely on cookies for authentication without additional CSRF measures
+- Missing Origin/Referer header validation on sensitive endpoints
+- Custom CSRF token implementations that use predictable or static values
+- AJAX requests to state-changing endpoints without X-CSRF-Token or similar headers`,
+			CategoriesHint: []string{"csrf", "auth"},
+			SeverityHint:   "medium",
+			ConfidenceHint: 0.7,
+			Scope: Scope{
+				IncludeGlobs: []string{
+					"**/*.js", "**/*.ts", "**/*.jsx", "**/*.tsx",
+					"**/*.py", "**/*.rb", "**/*.php", "**/*.go", "**/*.java",
+				},
+			},
+			Origin: Origin{
+				Method: "builtin",
+			},
+		},
 	}
 }
