@@ -141,7 +141,7 @@ func TestPrintUsage_IncludesKeepWorkspaceErrorFlag(t *testing.T) {
 	if !strings.Contains(out, "--keep-workspace-error") {
 		t.Fatalf("expected usage to include keep-workspace-error flag, got:\n%s", out)
 	}
-	if !strings.Contains(out, "governor checks [<tui|init|add|extract|list|validate|doctor|explain|enable|disable>] [flags]") {
+	if !strings.Contains(out, "governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable>] [flags]") {
 		t.Fatalf("expected usage to include checks tui/init/doctor/explain commands, got:\n%s", out)
 	}
 }

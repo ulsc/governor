@@ -19,11 +19,13 @@ import (
 	"governor/internal/checks"
 	"governor/internal/checkstui"
 	"governor/internal/extractor"
+	"governor/internal/intake"
 	"governor/internal/isolation"
 	"governor/internal/model"
 	"governor/internal/progress"
 	"governor/internal/trust"
 	"governor/internal/tui"
+	"governor/internal/worker"
 )
 
 func Execute(args []string) error {
@@ -599,6 +601,8 @@ func runChecks(args []string) error {
 		return runChecksDoctor(args[1:])
 	case "explain":
 		return runChecksExplain(args[1:])
+	case "test":
+		return runChecksTest(args[1:])
 	case "enable":
 		return runChecksStatus(args[1:], checks.StatusEnabled)
 	case "disable":
@@ -1166,6 +1170,160 @@ func runChecksExplain(args []string) error {
 	return nil
 }
 
+func runChecksTest(args []string) error {
+	fs := flag.NewFlagSet("checks test", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks + ~/.governor/checks, repo first)")
+	format := fs.String("format", "text", "Output format: text|json")
+	aiProfile := fs.String("ai-profile", "codex", "AI profile name (default codex)")
+	aiProvider := fs.String("ai-provider", "", "AI provider override: codex-cli|openai-compatible")
+	aiModel := fs.String("ai-model", "", "AI model override")
+	aiAuthMode := fs.String("ai-auth-mode", "", "AI auth override: auto|account|api-key")
+	aiBaseURL := fs.String("ai-base-url", "", "AI base URL override for openai-compatible providers")
+	aiAPIKeyEnv := fs.String("ai-api-key-env", "", "AI API key environment variable override")
+
+	var aiBin string
+	fs.StringVar(&aiBin, "ai-bin", "codex", "AI CLI executable path (used by codex-cli provider)")
+
+	var allowCustomAIBin bool
+	fs.BoolVar(&allowCustomAIBin, "allow-custom-ai-bin", false, "Allow non-default AI binary path (for testing only)")
+
+	executionMode := fs.String("execution-mode", "sandboxed", "AI execution mode: sandboxed|host")
+
+	var aiSandbox string
+	fs.StringVar(&aiSandbox, "ai-sandbox", "read-only", "AI sandbox mode: read-only|workspace-write|danger-full-access")
+
+	timeout := fs.Duration("timeout", 4*time.Minute, "Per-worker timeout")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	positional := fs.Args()
+	if len(positional) != 2 {
+		return errors.New("usage: governor checks test <check-id> <path> [flags]")
+	}
+	checkID := strings.TrimSpace(positional[0])
+	targetPath := strings.TrimSpace(positional[1])
+
+	outFormat := strings.ToLower(strings.TrimSpace(*format))
+	if outFormat != "text" && outFormat != "json" {
+		return errors.New("--format must be text or json")
+	}
+
+	selection, err := checks.ResolveAuditSelection(checks.AuditSelectionOptions{
+		ChecksDir: *checksDir,
+		OnlyIDs:   []string{checkID},
+	})
+	if err != nil {
+		return err
+	}
+	if len(selection.Checks) == 0 {
+		return fmt.Errorf("check %q not found or not enabled", checkID)
+	}
+
+	modeValue, err := normalizeExecutionModeFlag(*executionMode)
+	if err != nil {
+		return err
+	}
+	sandboxValue, err := normalizeSandboxModeFlag(aiSandbox)
+	if err != nil {
+		return err
+	}
+	if modeValue == "host" {
+		sandboxValue = ""
+	}
+
+	aiRequired := checks.SelectionRequiresAI(selection.Checks)
+	aiRuntime, err := ai.ResolveRuntime(ai.ResolveOptions{
+		Profile:       strings.TrimSpace(*aiProfile),
+		Provider:      strings.TrimSpace(*aiProvider),
+		Model:         strings.TrimSpace(*aiModel),
+		AuthMode:      strings.TrimSpace(*aiAuthMode),
+		Bin:           strings.TrimSpace(aiBin),
+		BaseURL:       strings.TrimSpace(*aiBaseURL),
+		APIKeyEnv:     strings.TrimSpace(*aiAPIKeyEnv),
+		ExecutionMode: modeValue,
+		SandboxMode:   sandboxValue,
+	})
+	if err != nil {
+		return err
+	}
+
+	if aiRequired && aiRuntime.UsesCLI() {
+		aiInfo, err := trust.ResolveAIBinary(context.Background(), aiRuntime.Bin, allowCustomAIBin)
+		if err != nil {
+			return err
+		}
+		aiRuntime.Bin = aiInfo.ResolvedPath
+	}
+
+	outDir := filepath.Join(os.TempDir(), fmt.Sprintf("governor-check-test-%d", time.Now().UnixNano()))
+	stage, err := intake.Stage(intake.StageOptions{
+		InputPath: targetPath,
+		OutDir:    outDir,
+		MaxFiles:  20000,
+		MaxBytes:  250 * 1024 * 1024,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stage.Cleanup() }()
+
+	results := worker.RunAll(context.Background(), stage.WorkspacePath, stage.Manifest, selection.Checks, worker.RunOptions{
+		AIRuntime:   aiRuntime,
+		CodexBin:    aiRuntime.Bin,
+		OutDir:      outDir,
+		MaxParallel: 1,
+		Timeout:     *timeout,
+		Verbose:     false,
+		Sink:        progress.NewPlainSink(os.Stderr),
+		Mode:        modeValue,
+		SandboxMode: sandboxValue,
+	})
+
+	var allFindings []model.Finding
+	for _, r := range results {
+		allFindings = append(allFindings, r.Findings...)
+	}
+
+	if outFormat == "json" {
+		b, marshalErr := json.MarshalIndent(allFindings, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("marshal findings: %w", marshalErr)
+		}
+		fmt.Println(string(b))
+	} else {
+		if len(allFindings) == 0 {
+			fmt.Println("no findings")
+		}
+		for _, f := range allFindings {
+			fmt.Printf("[%s] %s\n", strings.ToUpper(f.Severity), f.Title)
+			fmt.Printf("  category:   %s\n", f.Category)
+			if len(f.FileRefs) > 0 {
+				fmt.Printf("  file refs:  %s\n", strings.Join(f.FileRefs, ", "))
+			}
+			if f.Evidence != "" {
+				fmt.Printf("  evidence:   %s\n", f.Evidence)
+			}
+			if f.Impact != "" {
+				fmt.Printf("  impact:     %s\n", f.Impact)
+			}
+			if f.Remediation != "" {
+				fmt.Printf("  remediation: %s\n", f.Remediation)
+			}
+			fmt.Println()
+		}
+	}
+
+	for _, r := range results {
+		if r.Error != "" {
+			fmt.Fprintf(os.Stderr, "warning: %s: %s\n", r.Track, r.Error)
+		}
+	}
+	return nil
+}
+
 type checkCreateInput struct {
 	ChecksDir        string
 	TemplateID       string
@@ -1461,7 +1619,7 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  governor audit <path-or-zip> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
-	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|enable|disable>] [flags]")
+	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable>] [flags]")
 	fmt.Println("")
 	fmt.Println("Flags (audit):")
 	fmt.Println("  --out <dir>         Output directory (default ./.governor/runs/<timestamp>)")
