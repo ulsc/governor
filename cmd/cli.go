@@ -419,6 +419,9 @@ func printAuditSummary(report model.AuditReport, paths app.ArtifactPaths) {
 	fmt.Printf("audit markdown: %s\n", filepath.Clean(paths.MarkdownPath))
 	fmt.Printf("audit json:     %s\n", filepath.Clean(paths.JSONPath))
 	fmt.Printf("audit html:     %s\n", filepath.Clean(paths.HTMLPath))
+	if paths.SARIFPath != "" {
+		fmt.Printf("audit sarif:    %s\n", filepath.Clean(paths.SARIFPath))
+	}
 	if strings.TrimSpace(report.RunMetadata.AIProfile) != "" {
 		fmt.Printf("ai profile:     %s\n", report.RunMetadata.AIProfile)
 	}
@@ -495,6 +498,7 @@ func isolateArtifactPaths(outDir string) app.ArtifactPaths {
 		MarkdownPath: filepath.Join(outDir, "audit.md"),
 		JSONPath:     filepath.Join(outDir, "audit.json"),
 		HTMLPath:     filepath.Join(outDir, "audit.html"),
+		SARIFPath:    filepath.Join(outDir, "audit.sarif"),
 	}
 }
 
@@ -504,6 +508,7 @@ func printIsolateArtifactPaths(outDir string) {
 	fmt.Printf("audit markdown: %s\n", filepath.Clean(paths.MarkdownPath))
 	fmt.Printf("audit json:     %s\n", filepath.Clean(paths.JSONPath))
 	fmt.Printf("audit html:     %s\n", filepath.Clean(paths.HTMLPath))
+	fmt.Printf("audit sarif:    %s\n", filepath.Clean(paths.SARIFPath))
 }
 
 func loadIsolateAuditReport(outDir string) (model.AuditReport, error) {

@@ -54,6 +54,7 @@ type ArtifactPaths struct {
 	JSONPath     string
 	MarkdownPath string
 	HTMLPath     string
+	SARIFPath    string
 }
 
 func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport, paths ArtifactPaths, err error) {
@@ -270,6 +271,7 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 	jsonPath := filepath.Join(runDir, "audit.json")
 	mdPath := filepath.Join(runDir, "audit.md")
 	htmlPath := filepath.Join(runDir, "audit.html")
+	sarifPath := filepath.Join(runDir, "audit.sarif")
 
 	if jsonErr := reportpkg.WriteJSON(jsonPath, report); jsonErr != nil {
 		err = jsonErr
@@ -283,6 +285,10 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 		err = htmlErr
 		return
 	}
+	if sarifErr := reportpkg.WriteSARIF(sarifPath, report); sarifErr != nil {
+		err = sarifErr
+		return
+	}
 
 	paths = ArtifactPaths{
 		RunDir:       runDir,
@@ -290,6 +296,7 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 		JSONPath:     jsonPath,
 		MarkdownPath: mdPath,
 		HTMLPath:     htmlPath,
+		SARIFPath:    sarifPath,
 	}
 	return
 }
