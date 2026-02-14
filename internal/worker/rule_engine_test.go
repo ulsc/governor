@@ -418,6 +418,58 @@ func TestInsecureCrypto_MathRand(t *testing.T) {
 	}
 }
 
+// ── Test file exclusion ─────────────────────────────────────────────
+
+func TestTestFileExclusion_RuleCheckExcludesTestFiles(t *testing.T) {
+	check := findBuiltinCheck(t, "command_injection")
+	// Apply test file exclusions as the worker layer would
+	check.Scope = checks.ApplyTestFileExclusions(check.Scope)
+
+	content := `exec.Command("bash", "-c", userCmd)`
+	findings := runRuleCheck(t, check, "handler_test.go", content)
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for _test.go file with exclusions, got %d", len(findings))
+	}
+}
+
+func TestTestFileExclusion_RuleCheckIncludesTestFilesWhenRequested(t *testing.T) {
+	check := findBuiltinCheck(t, "command_injection")
+	// Do NOT apply test file exclusions (simulates --include-test-files)
+
+	content := `exec.Command("bash", "-c", userCmd)`
+	findings := runRuleCheck(t, check, "handler_test.go", content)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for _test.go file without exclusions, got %d", len(findings))
+	}
+}
+
+func TestTestFileExclusion_ScopeAllowsRejectsTestPaths(t *testing.T) {
+	scope := checks.ApplyTestFileExclusions(checks.Scope{
+		IncludeGlobs: []string{"**/*.go"},
+		ExcludeGlobs: []string{"**/vendor/**"},
+	})
+
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"main.go", true},
+		{"internal/app/audit.go", true},
+		{"internal/app/audit_test.go", false},
+		{"test/fixtures/data.go", false},
+		{"pkg/testdata/sample.go", false},
+		{"vendor/lib/lib.go", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := scopeAllows(tt.path, scope)
+			if got != tt.want {
+				t.Errorf("scopeAllows(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 // ── Builtin check integrity ─────────────────────────────────────────
 
 func TestBuiltinChecks_AllCompile(t *testing.T) {

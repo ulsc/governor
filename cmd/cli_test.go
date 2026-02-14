@@ -133,6 +133,209 @@ func TestLoadIsolateAuditReport_UsesHostPaths(t *testing.T) {
 	}
 }
 
+func TestRunInit_CreatesDirectoryStructure(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	restoreWD := setWorkingDir(t, repoRoot)
+	defer restoreWD()
+
+	out := captureStdout(t, func() {
+		if err := runInit(nil); err != nil {
+			t.Fatalf("runInit failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "initialized:") {
+		t.Fatalf("expected 'initialized:' in output, got:\n%s", out)
+	}
+
+	govDir := filepath.Join(repoRoot, ".governor")
+	for _, path := range []string{
+		govDir,
+		filepath.Join(govDir, "checks"),
+		filepath.Join(govDir, ".gitignore"),
+		filepath.Join(govDir, "config.yaml"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to exist: %v", path, err)
+		}
+	}
+
+	gitignore, err := os.ReadFile(filepath.Join(govDir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	if !strings.Contains(string(gitignore), "!checks/") {
+		t.Fatalf("expected .gitignore to preserve checks, got:\n%s", gitignore)
+	}
+
+	config, err := os.ReadFile(filepath.Join(govDir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+	if !strings.Contains(string(config), "# ai_profile: codex") {
+		t.Fatalf("expected config template with commented defaults, got:\n%s", config)
+	}
+}
+
+func TestRunInit_Idempotent(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	restoreWD := setWorkingDir(t, repoRoot)
+	defer restoreWD()
+
+	_ = captureStdout(t, func() {
+		if err := runInit(nil); err != nil {
+			t.Fatalf("first runInit failed: %v", err)
+		}
+	})
+
+	configPath := filepath.Join(repoRoot, ".governor", "config.yaml")
+	original, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runInit(nil); err != nil {
+			t.Fatalf("second runInit failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "already initialized") {
+		t.Fatalf("expected 'already initialized' on second run, got:\n%s", out)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after second run: %v", err)
+	}
+	if string(original) != string(after) {
+		t.Fatal("config was modified on idempotent run")
+	}
+}
+
+func TestRunInit_ForceOverwrites(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	restoreWD := setWorkingDir(t, repoRoot)
+	defer restoreWD()
+
+	_ = captureStdout(t, func() {
+		if err := runInit(nil); err != nil {
+			t.Fatalf("first runInit failed: %v", err)
+		}
+	})
+
+	configPath := filepath.Join(repoRoot, ".governor", "config.yaml")
+	if err := os.WriteFile(configPath, []byte("custom content"), 0o600); err != nil {
+		t.Fatalf("write custom config: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runInit([]string{"--force"}); err != nil {
+			t.Fatalf("runInit --force failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "initialized:") {
+		t.Fatalf("expected 'initialized:' in force output, got:\n%s", out)
+	}
+
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after force: %v", err)
+	}
+	if string(config) == "custom content" {
+		t.Fatal("config was not overwritten by --force")
+	}
+	if !strings.Contains(string(config), "# ai_profile: codex") {
+		t.Fatalf("expected default config template after force, got:\n%s", config)
+	}
+}
+
+func TestRunInit_WithAIProfile(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	restoreWD := setWorkingDir(t, repoRoot)
+	defer restoreWD()
+
+	_ = captureStdout(t, func() {
+		if err := runInit([]string{"--ai-profile", "openai"}); err != nil {
+			t.Fatalf("runInit with ai-profile failed: %v", err)
+		}
+	})
+
+	config, err := os.ReadFile(filepath.Join(repoRoot, ".governor", "config.yaml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(config), "ai_profile: openai") {
+		t.Fatalf("expected ai_profile: openai in config, got:\n%s", config)
+	}
+	if strings.Contains(string(config), "# ai_profile:") {
+		t.Fatalf("expected ai_profile to be uncommented, got:\n%s", config)
+	}
+}
+
+func TestRunInit_NoGitRepoWarns(t *testing.T) {
+	workDir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	restoreWD := setWorkingDir(t, workDir)
+	defer restoreWD()
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
+	}
+	os.Stderr = w
+
+	_ = captureStdout(t, func() {
+		if err := runInit(nil); err != nil {
+			t.Fatalf("runInit failed: %v", err)
+		}
+	})
+
+	_ = w.Close()
+	os.Stderr = oldStderr
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	_ = r.Close()
+	stderr := buf.String()
+
+	if !strings.Contains(stderr, "warning: not inside a git repository") {
+		t.Fatalf("expected warning about no git repo on stderr, got:\n%s", stderr)
+	}
+
+	if _, err := os.Stat(filepath.Join(workDir, ".governor", "config.yaml")); err != nil {
+		t.Fatalf("expected .governor to be created even without git repo: %v", err)
+	}
+}
+
+func TestPrintUsage_IncludesIncludeTestFilesFlag(t *testing.T) {
+	out := captureStdout(t, func() {
+		printUsage()
+	})
+
+	if !strings.Contains(out, "--include-test-files") {
+		t.Fatalf("expected usage to include --include-test-files flag, got:\n%s", out)
+	}
+}
+
 func TestPrintUsage_IncludesKeepWorkspaceErrorFlag(t *testing.T) {
 	out := captureStdout(t, func() {
 		printUsage()
@@ -140,6 +343,9 @@ func TestPrintUsage_IncludesKeepWorkspaceErrorFlag(t *testing.T) {
 
 	if !strings.Contains(out, "--keep-workspace-error") {
 		t.Fatalf("expected usage to include keep-workspace-error flag, got:\n%s", out)
+	}
+	if !strings.Contains(out, "governor init [flags]") {
+		t.Fatalf("expected usage to include init command, got:\n%s", out)
 	}
 	if !strings.Contains(out, "governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable>] [flags]") {
 		t.Fatalf("expected usage to include checks tui/init/doctor/explain commands, got:\n%s", out)

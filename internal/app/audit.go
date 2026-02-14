@@ -49,7 +49,8 @@ type AuditOptions struct {
 
 	SandboxDenyHostFallback bool
 
-	BaselinePath string
+	BaselinePath     string
+	IncludeTestFiles bool
 }
 
 type ArtifactPaths struct {
@@ -203,6 +204,7 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 		SandboxMode: opts.SandboxMode,
 
 		SandboxDenyHostFallback: opts.SandboxDenyHostFallback,
+		IncludeTestFiles:        opts.IncludeTestFiles,
 	})
 
 	findings := make([]model.Finding, 0, 128)

@@ -69,6 +69,40 @@ type Origin struct {
 	Inputs []string `yaml:"inputs,omitempty" json:"inputs,omitempty"`
 }
 
+// DefaultTestFileExcludeGlobs returns the canonical set of glob patterns used
+// to exclude test files and fixtures from security scanning.
+func DefaultTestFileExcludeGlobs() []string {
+	return []string{
+		"**/*_test.go",
+		"**/test/**",
+		"**/*.test.*",
+		"**/fixtures/**",
+		"**/__tests__/**",
+		"**/*.spec.*",
+		"**/testdata/**",
+	}
+}
+
+// ApplyTestFileExclusions returns a copy of scope with the default test file
+// exclusion globs appended, deduplicating any that already exist.
+func ApplyTestFileExclusions(scope Scope) Scope {
+	existing := make(map[string]struct{}, len(scope.ExcludeGlobs))
+	for _, g := range scope.ExcludeGlobs {
+		existing[g] = struct{}{}
+	}
+	out := make([]string, len(scope.ExcludeGlobs))
+	copy(out, scope.ExcludeGlobs)
+	for _, g := range DefaultTestFileExcludeGlobs() {
+		if _, ok := existing[g]; !ok {
+			out = append(out, g)
+		}
+	}
+	return Scope{
+		IncludeGlobs: scope.IncludeGlobs,
+		ExcludeGlobs: out,
+	}
+}
+
 type Definition struct {
 	APIVersion     string    `yaml:"api_version" json:"api_version"`
 	ID             string    `yaml:"id" json:"id"`

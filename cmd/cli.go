@@ -41,6 +41,8 @@ func Execute(args []string) error {
 		return runIsolate(args[1:])
 	case "checks":
 		return runChecks(args[1:])
+	case "init":
+		return runInit(args[1:])
 	case "help", "--help", "-h":
 		printUsage()
 		return nil
@@ -89,6 +91,7 @@ func runAudit(args []string) error {
 	keepWorkspaceError := fs.Bool("keep-workspace-error", false, "Retain staged workspace only when run ends with warning/failed status")
 	allowExistingOutDir := fs.Bool("allow-existing-out-dir", false, "Allow using an existing empty output directory (internal use)")
 	sandboxDenyHostFallback := fs.Bool("sandbox-deny-host-fallback", false, "Automatically rerun tracks in host mode when sandbox denies file access (internal use)")
+	includeTestFiles := fs.Bool("include-test-files", false, "Include test files in security scanning (excluded by default)")
 
 	var onlyChecks listFlag
 	var skipChecks listFlag
@@ -251,7 +254,8 @@ func runAudit(args []string) error {
 
 		SandboxDenyHostFallback: *sandboxDenyHostFallback,
 
-		BaselinePath: strings.TrimSpace(*baseline),
+		BaselinePath:     strings.TrimSpace(*baseline),
+		IncludeTestFiles: *includeTestFiles,
 	}
 
 	if useTUI {
@@ -343,6 +347,8 @@ func runIsolateAudit(args []string) error {
 	checksDir := fs.String("checks-dir", "", "Checks directory mounted read-only (optional)")
 	noCustomChecks := fs.Bool("no-custom-checks", false, "Run built-in checks only")
 	keepWorkspaceError := fs.Bool("keep-workspace-error", false, "Retain staged workspace only when run ends with warning/failed status")
+
+	includeTestFiles := fs.Bool("include-test-files", false, "Include test files in security scanning (excluded by default)")
 
 	var onlyChecks listFlag
 	var skipChecks listFlag
@@ -444,6 +450,7 @@ func runIsolateAudit(args []string) error {
 		OnlyChecks:           onlyChecks.Values(),
 		SkipChecks:           skipChecks.Values(),
 		KeepWorkspaceOnError: *keepWorkspaceError,
+		IncludeTestFiles:     *includeTestFiles,
 	}); err != nil {
 		return err
 	}
@@ -1641,6 +1648,119 @@ func normalizeSandboxModeFlag(raw string) (string, error) {
 	}
 }
 
+func runInit(args []string) error {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	force := fs.Bool("force", false, "Overwrite existing files")
+	aiProfile := fs.String("ai-profile", "", "Set default AI profile in config")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("init does not accept positional args")
+	}
+
+	repoRoot, err := checks.FindRepoRootFromCWD()
+	if err != nil {
+		return err
+	}
+	root := repoRoot
+	if root == "" {
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			return fmt.Errorf("resolve cwd: %w", cwdErr)
+		}
+		root = cwd
+		fmt.Fprintf(os.Stderr, "warning: not inside a git repository, initializing in %s\n", root)
+	}
+
+	govDir := filepath.Join(root, ".governor")
+	checksDir := filepath.Join(govDir, "checks")
+	gitignorePath := filepath.Join(govDir, ".gitignore")
+	configPath := filepath.Join(govDir, "config.yaml")
+
+	if !*force {
+		if _, err := os.Stat(gitignorePath); err == nil {
+			if _, err := os.Stat(configPath); err == nil {
+				fmt.Println("already initialized:", govDir)
+				return nil
+			}
+		}
+	}
+
+	if err := os.MkdirAll(checksDir, 0o700); err != nil {
+		return fmt.Errorf("create directory %s: %w", checksDir, err)
+	}
+
+	gitignoreContent := `# Keep this file and repo-local checks.
+*
+!.gitignore
+!checks/
+!checks/**
+
+# Always ignore generated run artifacts.
+runs/
+`
+
+	configContent := `# Governor configuration
+# Docs: https://github.com/anthropics/governor
+#
+# Values here override global (~/.governor/config.yaml) settings.
+# CLI flags override both.
+
+# ai_profile: codex
+# ai_provider: codex-cli
+# ai_model:
+# workers: 3
+# execution_mode: sandboxed
+# ai_sandbox: read-only
+# fail_on:
+# timeout: 4m
+# verbose: false
+`
+
+	if strings.TrimSpace(*aiProfile) != "" {
+		configContent = strings.Replace(configContent, "# ai_profile: codex", "ai_profile: "+strings.TrimSpace(*aiProfile), 1)
+	}
+
+	created := []string{}
+
+	if err := writeIfNeeded(gitignorePath, gitignoreContent, *force); err != nil {
+		return err
+	}
+	created = append(created, gitignorePath)
+
+	if err := writeIfNeeded(configPath, configContent, *force); err != nil {
+		return err
+	}
+	created = append(created, configPath)
+
+	fmt.Println("initialized:", govDir)
+	for _, path := range created {
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rel = path
+		}
+		fmt.Println("  created:", rel)
+	}
+	fmt.Println("")
+	fmt.Println("next steps:")
+	fmt.Println("  governor checks init    — scaffold a custom check")
+	fmt.Println("  governor audit <path>   — run a security audit")
+	return nil
+}
+
+func writeIfNeeded(path, content string, force bool) error {
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+	}
+	return os.WriteFile(path, []byte(content), 0o600)
+}
+
 func usageError(msg string) error {
 	printUsage()
 	return errors.New(msg)
@@ -1656,6 +1776,7 @@ func printUsage() {
 	fmt.Println("Governor CLI")
 	fmt.Println("")
 	fmt.Println("Usage:")
+	fmt.Println("  governor init [flags]")
 	fmt.Println("  governor audit <path-or-zip> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
 	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable>] [flags]")
@@ -1685,6 +1806,7 @@ func printUsage() {
 	fmt.Println("  --tui               Enable interactive terminal UI")
 	fmt.Println("  --fail-on <sev>     Exit non-zero if findings meet/exceed severity (critical|high|medium|low|info)")
 	fmt.Println("  --baseline <path>   Compare against a previous audit.json for diff report")
+	fmt.Println("  --include-test-files  Include test files in security scanning (excluded by default)")
 	fmt.Println("  --no-tui            Disable interactive terminal UI")
 	fmt.Println("")
 	fmt.Println("Flags (isolate audit):")
@@ -1711,6 +1833,7 @@ func printUsage() {
 	fmt.Println("  --skip-check <id>   Skip specified check ID (repeatable)")
 	fmt.Println("  --no-custom-checks  Disable custom check loading")
 	fmt.Println("  --keep-workspace-error  Retain staged workspace on warning/failed runs (default deletes)")
+	fmt.Println("  --include-test-files  Include test files in security scanning (excluded by default)")
 	fmt.Println("  --fail-on <sev>     Exit non-zero if findings meet/exceed severity (critical|high|medium|low|info)")
 }
 

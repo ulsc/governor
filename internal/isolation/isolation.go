@@ -95,6 +95,7 @@ type AuditOptions struct {
 	OnlyChecks           []string
 	SkipChecks           []string
 	KeepWorkspaceOnError bool
+	IncludeTestFiles     bool
 }
 
 func RunAudit(ctx context.Context, opts AuditOptions) error {
@@ -1198,6 +1199,9 @@ func buildInnerGovernorArgs(opts AuditOptions, hasChecksMount bool) []string {
 	}
 	if opts.KeepWorkspaceOnError {
 		args = append(args, "--keep-workspace-error")
+	}
+	if opts.IncludeTestFiles {
+		args = append(args, "--include-test-files")
 	}
 	if hasChecksMount {
 		args = append(args, "--checks-dir", "/checks")

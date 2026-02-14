@@ -37,6 +37,7 @@ type RunOptions struct {
 	SandboxMode  string
 
 	SandboxDenyHostFallback bool
+	IncludeTestFiles        bool
 }
 
 const (
@@ -170,6 +171,9 @@ func RunAll(ctx context.Context, workspace string, manifest model.InputManifest,
 
 func runOneTrack(parent context.Context, workspace string, manifest model.InputManifest, checkDef checks.Definition, schemaPath string, opts RunOptions) model.WorkerResult {
 	checkDef = checks.NormalizeDefinition(checkDef)
+	if !opts.IncludeTestFiles {
+		checkDef.Scope = checks.ApplyTestFileExclusions(checkDef.Scope)
+	}
 	started := time.Now().UTC()
 	ctx, cancel := context.WithTimeout(parent, opts.Timeout)
 	defer cancel()

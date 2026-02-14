@@ -220,8 +220,7 @@ func Builtins() []Definition {
 					"**/*.cfg", "**/*.conf", "**/*.ini", "**/*.properties",
 				},
 				ExcludeGlobs: []string{
-					"**/node_modules/**", "**/vendor/**", "**/*_test.go",
-					"**/test/**", "**/*.test.*", "**/fixtures/**",
+					"**/node_modules/**", "**/vendor/**",
 					"**/*.lock", "**/go.sum",
 				},
 			},
@@ -475,7 +474,6 @@ func Builtins() []Definition {
 				},
 				ExcludeGlobs: []string{
 					"**/node_modules/**", "**/vendor/**",
-					"**/*_test.go", "**/test/**", "**/*.test.*",
 				},
 			},
 			CategoriesHint: []string{"crypto", "configuration"},
