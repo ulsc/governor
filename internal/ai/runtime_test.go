@@ -3,6 +3,7 @@ package ai
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -112,6 +113,40 @@ profiles:
 	}
 	if rt.Bin != "/tmp/repo-codex" {
 		t.Fatalf("expected repo profile to override home profile, got %s", rt.Bin)
+	}
+}
+
+func TestResolveRuntime_RejectsUnsupportedProfileAPIVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWD) }()
+
+	profilePath := filepath.Join(repo, ".governor", "ai")
+	if err := os.MkdirAll(profilePath, 0o700); err != nil {
+		t.Fatalf("mkdir profile path: %v", err)
+	}
+	content := []byte(`api_version: governor/ai/v999
+profiles:
+  - name: codex
+    provider: codex-cli
+`)
+	if err := os.WriteFile(filepath.Join(profilePath, "profiles.yaml"), content, 0o600); err != nil {
+		t.Fatalf("write profiles.yaml: %v", err)
+	}
+
+	_, err = ResolveRuntime(ResolveOptions{Profile: "codex"})
+	if err == nil {
+		t.Fatal("expected unsupported api_version error")
+	}
+	if !strings.Contains(err.Error(), "unsupported ai profile api_version") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

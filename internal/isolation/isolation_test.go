@@ -124,6 +124,32 @@ func TestBuildContainerEnv_SubscriptionDoesNotForwardAPIKeys(t *testing.T) {
 	}
 }
 
+func TestBuildContainerEnv_APIKeysNotForwardedWhenAINotRequired(t *testing.T) {
+	env := buildContainerEnv(map[string]string{
+		"OPENAI_API_KEY": "placeholder_api_key_value",
+		"CODEX_API_KEY":  "placeholder_codex_key",
+		"HTTPS_PROXY":    "http://proxy.local:8080",
+	}, ai.Runtime{
+		Provider:  ai.ProviderOpenAICompatible,
+		APIKeyEnv: "OPENAI_API_KEY",
+		Profile:   "openai",
+	}, AuthAPIKey, false)
+
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "OPENAI_API_KEY=") {
+		t.Fatalf("did not expect OPENAI_API_KEY when aiRequired=false")
+	}
+	if strings.Contains(joined, "CODEX_API_KEY=") {
+		t.Fatalf("did not expect CODEX_API_KEY when aiRequired=false")
+	}
+	if !strings.Contains(joined, "HTTPS_PROXY=http://proxy.local:8080") {
+		t.Fatalf("expected proxy env var to remain forwarded")
+	}
+	if !strings.Contains(joined, "AI_PROFILE=openai") {
+		t.Fatalf("expected AI profile metadata to be forwarded")
+	}
+}
+
 func TestEnvNames_StripsValues(t *testing.T) {
 	in := []string{
 		"OPENAI_API_KEY=secret-value",

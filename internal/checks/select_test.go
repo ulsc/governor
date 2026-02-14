@@ -111,3 +111,44 @@ func TestBuildSelection_DuplicateIDWarnsAndKeepsFirstDefinition(t *testing.T) {
 		t.Fatalf("unexpected warning: %v", res.Warnings)
 	}
 }
+
+func TestBuildSelection_MissingOnlyIDsWarnsSortedAndErrorsWhenNoneSelected(t *testing.T) {
+	custom := []Definition{
+		{
+			APIVersion:   APIVersion,
+			ID:           "skipped-check",
+			Status:       StatusEnabled,
+			Source:       SourceCustom,
+			Instructions: "enabled check",
+		},
+	}
+
+	res, err := BuildSelection(nil, custom, SelectionOptions{
+		IncludeBuiltins: false,
+		IncludeCustom:   true,
+		OnlyIDs:         []string{"missing-b", "skipped-check", "missing-a"},
+		SkipIDs:         []string{"skipped-check"},
+	})
+	if err == nil {
+		t.Fatal("expected no-checks-selected error")
+	}
+	if !strings.Contains(err.Error(), "no checks selected") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Checks) != 0 {
+		t.Fatalf("expected zero selected checks, got %d", len(res.Checks))
+	}
+	if len(res.Warnings) != 3 {
+		t.Fatalf("expected 3 warnings for filtered/missing only-check IDs, got %d: %v", len(res.Warnings), res.Warnings)
+	}
+	expected := []string{
+		`--only-check requested unknown or filtered check "missing-a"`,
+		`--only-check requested unknown or filtered check "missing-b"`,
+		`--only-check requested unknown or filtered check "skipped-check"`,
+	}
+	for i, want := range expected {
+		if res.Warnings[i] != want {
+			t.Fatalf("unexpected warning at index %d: got %q want %q", i, res.Warnings[i], want)
+		}
+	}
+}
