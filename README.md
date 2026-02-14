@@ -42,9 +42,6 @@ Disclaimer note:
 - [Checks Docs](#checks-docs)
 - [TUI and Progress](#tui-and-progress)
 - [Output Artifacts](#output-artifacts)
-- [Security and Safety](#security-and-safety)
-- [Architecture](#architecture)
-- [Roadmap](#roadmap)
 - [License](#license)
 - [Disclaimer](#disclaimer)
 - [Contributing](#contributing)
@@ -632,37 +629,6 @@ workspace/                 # deleted by default; kept for warning/failed runs wi
 
 Git hygiene:
 - Keep `.governor/.gitignore` tracked so `runs/` artifacts stay out of git while `.governor/checks/` can be versioned.
-
-## Security and Safety
-
-- ZIP extraction blocks path traversal and absolute paths.
-- ZIP extraction enforces bounded entry count/size before and during extraction.
-- Symlinks are skipped in intake and not copied into the worker workspace.
-- Large inputs are constrained by `--max-files` and `--max-bytes` on the staged workspace.
-- Bulky/non-source paths are excluded (`node_modules`, `vendor`, `.git`, etc.).
-- Non-default `--ai-bin` requires `--allow-custom-ai-bin`.
-- Run directories default to `0700`; report/log/check artifacts default to `0600`.
-- Worker/report text is redacted for common secret patterns before persistence.
-
-## Architecture
-
-Core packages:
-- `cmd`: CLI entrypoints and flags
-- `internal/app`: audit orchestration
-- `internal/checks`: check model, YAML load/validate, selection
-- `internal/worker`: bounded-concurrency worker runner
-- `internal/prompt`: per-check prompt generation
-- `internal/extractor`: documents-to-checks pipeline
-- `internal/report`: markdown/json/html report rendering
-- `internal/tui`: terminal-native progress UI
-- `internal/intake`: input staging and manifest generation
-
-## Roadmap
-
-- Connector-based document ingestion (Confluence/SharePoint/etc.)
-- Additional built-in security check packs
-- Policy profiles per organization/team
-- More granular severity/confidence calibration
 
 ## License
 
