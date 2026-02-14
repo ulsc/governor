@@ -1,8 +1,10 @@
 package ai
 
 import (
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── extractMessageContent ───────────────────────────────────────────
@@ -226,5 +228,86 @@ func TestBuildCodexExecArgs_AlwaysHasSkipGitRepoCheck(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--skip-git-repo-check") {
 		t.Errorf("expected --skip-git-repo-check flag, got: %s", joined)
+	}
+}
+
+// ── isRetryableHTTPError ────────────────────────────────────────────
+
+func TestIsRetryableHTTPError(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		want   bool
+	}{
+		{"network error", errors.New("connection refused"), 0, true},
+		{"429 rate limit", nil, 429, true},
+		{"500 server error", nil, 500, true},
+		{"502 bad gateway", nil, 502, true},
+		{"503 service unavailable", nil, 503, true},
+		{"400 bad request", nil, 400, false},
+		{"401 unauthorized", nil, 401, false},
+		{"403 forbidden", nil, 403, false},
+		{"200 success", nil, 200, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isRetryableHTTPError(tt.err, tt.status)
+			if got != tt.want {
+				t.Errorf("isRetryableHTTPError(%v, %d) = %v, want %v", tt.err, tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+// ── parseRetryAfter ─────────────────────────────────────────────────
+
+func TestParseRetryAfter(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{"empty", "", 0},
+		{"seconds", "5", 5 * time.Second},
+		{"large seconds capped", "120", 30 * time.Second},
+		{"zero", "0", 0},
+		{"negative", "-1", 0},
+		{"whitespace", "  3  ", 3 * time.Second},
+		{"invalid string", "not-a-number", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseRetryAfter(tt.header)
+			if got != tt.want {
+				t.Errorf("parseRetryAfter(%q) = %v, want %v", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
+// ── calculateBackoff ────────────────────────────────────────────────
+
+func TestCalculateBackoff(t *testing.T) {
+	tests := []struct {
+		name    string
+		attempt int
+		base    time.Duration
+		want    time.Duration
+	}{
+		{"attempt 0", 0, time.Second, time.Second},
+		{"attempt 1", 1, time.Second, 2 * time.Second},
+		{"attempt 2", 2, time.Second, 4 * time.Second},
+		{"attempt 3", 3, time.Second, 8 * time.Second},
+		{"capped at max", 10, time.Second, 30 * time.Second},
+		{"custom base", 1, 2 * time.Second, 4 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := calculateBackoff(tt.attempt, tt.base)
+			if got != tt.want {
+				t.Errorf("calculateBackoff(%d, %v) = %v, want %v", tt.attempt, tt.base, got, tt.want)
+			}
+		})
 	}
 }

@@ -7,16 +7,25 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"governor/internal/envsafe"
 	"governor/internal/safefile"
+)
+
+const (
+	httpMaxRetries = 3
+	httpBaseBackoff = 1 * time.Second
+	httpMaxBackoff  = 30 * time.Second
+	httpClientTimeout = 90 * time.Second
 )
 
 type ExecutionInput struct {
@@ -164,46 +173,11 @@ func executeOpenAICompatible(ctx context.Context, runtime Runtime, input Executi
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	respBody, statusCode, err := doOpenAIHTTPRequestWithRetry(ctx, endpoint, bodyBytes, apiKey, includeAuth, runtime.Headers)
 	if err != nil {
-		return nil, fmt.Errorf("build ai request: %w", err)
+		return respBody, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
-	if includeAuth {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	for k, v := range runtime.Headers {
-		k = strings.TrimSpace(k)
-		v = strings.TrimSpace(v)
-		if k == "" || v == "" {
-			continue
-		}
-		httpReq.Header.Set(k, v)
-	}
-
-	client := &http.Client{Timeout: 90 * time.Second}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("execute ai request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	if err != nil {
-		return nil, fmt.Errorf("read ai response: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		reason := strings.TrimSpace(string(respBody))
-		if reason == "" {
-			reason = "empty response body"
-		}
-		if len(reason) > 1000 {
-			reason = reason[:1000] + "..."
-		}
-		return respBody, fmt.Errorf("ai provider returned HTTP %d: %s", resp.StatusCode, reason)
-	}
+	_ = statusCode
 
 	parsed := openAIChatCompletionsResponse{}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
@@ -239,6 +213,146 @@ func executeOpenAICompatible(ctx context.Context, runtime Runtime, input Executi
 	}
 
 	return respBody, nil
+}
+
+func doOpenAIHTTPRequestWithRetry(
+	ctx context.Context,
+	endpoint string,
+	bodyBytes []byte,
+	apiKey string,
+	includeAuth bool,
+	headers map[string]string,
+) ([]byte, int, error) {
+	client := &http.Client{Timeout: httpClientTimeout}
+	var lastBody []byte
+	var lastErr error
+
+	for attempt := 0; attempt <= httpMaxRetries; attempt++ {
+		if attempt > 0 {
+			if err := ctx.Err(); err != nil {
+				return lastBody, 0, fmt.Errorf("ai request cancelled before retry: %w", err)
+			}
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, 0, fmt.Errorf("build ai request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "application/json")
+		if includeAuth {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		for k, v := range headers {
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			if k == "" || v == "" {
+				continue
+			}
+			httpReq.Header.Set(k, v)
+		}
+
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("execute ai request: %w", err)
+			if !isRetryableHTTPError(err, 0) || attempt >= httpMaxRetries {
+				return nil, 0, lastErr
+			}
+			sleepWithJitter(ctx, calculateBackoff(attempt, httpBaseBackoff))
+			continue
+		}
+
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+		resp.Body.Close()
+		if err != nil {
+			return nil, resp.StatusCode, fmt.Errorf("read ai response: %w", err)
+		}
+		lastBody = respBody
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return respBody, resp.StatusCode, nil
+		}
+
+		reason := strings.TrimSpace(string(respBody))
+		if reason == "" {
+			reason = "empty response body"
+		}
+		if len(reason) > 1000 {
+			reason = reason[:1000] + "..."
+		}
+		lastErr = fmt.Errorf("ai provider returned HTTP %d: %s", resp.StatusCode, reason)
+
+		if !isRetryableHTTPError(nil, resp.StatusCode) || attempt >= httpMaxRetries {
+			return respBody, resp.StatusCode, lastErr
+		}
+
+		backoff := calculateBackoff(attempt, httpBaseBackoff)
+		if resp.StatusCode == 429 {
+			if retryAfter := parseRetryAfter(resp.Header.Get("Retry-After")); retryAfter > 0 {
+				backoff = retryAfter
+			}
+		}
+		sleepWithJitter(ctx, backoff)
+	}
+	return lastBody, 0, lastErr
+}
+
+func isRetryableHTTPError(err error, statusCode int) bool {
+	if err != nil {
+		return true // network errors are retryable
+	}
+	if statusCode == 429 {
+		return true // rate limited
+	}
+	if statusCode >= 500 {
+		return true // server errors
+	}
+	return false
+}
+
+func parseRetryAfter(header string) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(header); err == nil && secs > 0 {
+		d := time.Duration(secs) * time.Second
+		if d > httpMaxBackoff {
+			d = httpMaxBackoff
+		}
+		return d
+	}
+	if t, err := time.Parse(time.RFC1123, header); err == nil {
+		d := time.Until(t)
+		if d <= 0 {
+			return 0
+		}
+		if d > httpMaxBackoff {
+			d = httpMaxBackoff
+		}
+		return d
+	}
+	return 0
+}
+
+func calculateBackoff(attempt int, base time.Duration) time.Duration {
+	backoff := base
+	for i := 0; i < attempt; i++ {
+		backoff *= 2
+	}
+	if backoff > httpMaxBackoff {
+		backoff = httpMaxBackoff
+	}
+	return backoff
+}
+
+func sleepWithJitter(ctx context.Context, d time.Duration) {
+	// Add ±10% jitter
+	jitter := time.Duration(float64(d) * (0.9 + rand.Float64()*0.2))
+	select {
+	case <-ctx.Done():
+	case <-time.After(jitter):
+	}
 }
 
 func resolveAPIKey(runtime Runtime) (apiKey string, includeAuth bool, err error) {
