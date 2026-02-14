@@ -58,9 +58,9 @@ func TestResolveReadDirs_DefaultRepoThenHome(t *testing.T) {
 		t.Fatalf("expected 2 dirs, got %d (%v)", len(dirs), dirs)
 	}
 
-	resolvedRepoRoot, err := findRepoRootFromCWD()
+	resolvedRepoRoot, err := FindRepoRootFromCWD()
 	if err != nil {
-		t.Fatalf("findRepoRootFromCWD failed: %v", err)
+		t.Fatalf("FindRepoRootFromCWD failed: %v", err)
 	}
 	if dirs[0] != filepath.Join(resolvedRepoRoot, ".governor", "checks") {
 		t.Fatalf("unexpected first dir: %s", dirs[0])
@@ -89,9 +89,9 @@ func TestResolveWriteDir_DefaultRepoWhenInGitRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveWriteDir failed: %v", err)
 	}
-	resolvedRepoRoot, err := findRepoRootFromCWD()
+	resolvedRepoRoot, err := FindRepoRootFromCWD()
 	if err != nil {
-		t.Fatalf("findRepoRootFromCWD failed: %v", err)
+		t.Fatalf("FindRepoRootFromCWD failed: %v", err)
 	}
 	want := filepath.Join(resolvedRepoRoot, ".governor", "checks")
 	if dir != want {

@@ -11,6 +11,8 @@ Governor reads config from two YAML files, merged in order:
 
 Missing files are silently ignored. If neither file exists, Governor uses built-in defaults.
 
+> **Tip:** Run `governor init` to scaffold the repo-local `.governor/` directory with a commented config template, `.gitignore`, and `checks/` directory.
+
 ### Precedence order (lowest to highest)
 
 ```

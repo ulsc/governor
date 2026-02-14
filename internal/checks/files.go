@@ -27,7 +27,7 @@ func ResolveReadDirs(raw string) ([]string, error) {
 	}
 
 	dirs := make([]string, 0, 2)
-	repoRoot, err := findRepoRootFromCWD()
+	repoRoot, err := FindRepoRootFromCWD()
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func ResolveWriteDir(raw string) (string, error) {
 		return resolvePath(raw)
 	}
 
-	repoRoot, err := findRepoRootFromCWD()
+	repoRoot, err := FindRepoRootFromCWD()
 	if err != nil {
 		return "", err
 	}
@@ -288,7 +288,9 @@ func resolvePath(raw string) (string, error) {
 	return abs, nil
 }
 
-func findRepoRootFromCWD() (string, error) {
+// FindRepoRootFromCWD walks up the directory tree from the current working
+// directory looking for a .git directory. Returns empty string if not in a repo.
+func FindRepoRootFromCWD() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("resolve cwd: %w", err)

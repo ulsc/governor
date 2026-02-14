@@ -32,6 +32,7 @@ Disclaimer note:
 - [How It Works](#how-it-works)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
+- [Init Command](#init-command)
 - [CI/CD](#cicd)
 - [Audit Command](#audit-command)
 - [Isolated Runs](#isolated-runs)
@@ -85,19 +86,22 @@ Governor is built for organizations that receive many source folders/zips and ne
 # 1) Build
 make build
 
-# 2) Run audit on a folder
+# 2) Initialize the .governor/ workspace
+./bin/governor init
+
+# 3) Run audit on a folder
 ./bin/governor audit /path/to/app
 
-# 3) Initialize a draft custom check from a template
+# 4) Initialize a draft custom check from a template
 ./bin/governor checks init \
   --id authz-missing-role-check \
   --template authz-missing-checks \
   --name "Missing role checks"
 
-# 4) Enable it
+# 5) Enable it
 ./bin/governor checks enable authz-missing-role-check
 
-# 5) Re-run audit with built-ins + enabled custom checks
+# 6) Re-run audit with built-ins + enabled custom checks
 ./bin/governor audit /path/to/app
 ```
 
@@ -144,6 +148,40 @@ Default install path:
 ```text
 ~/.local/bin/governor
 ```
+
+## Init Command
+
+```bash
+governor init [flags]
+```
+
+Scaffolds the `.governor/` workspace in the current repository:
+
+- `.governor/` and `.governor/checks/` directories
+- `.governor/.gitignore` (keeps checks in git, ignores runs)
+- `.governor/config.yaml` (commented template with sensible defaults)
+
+The command is idempotent — it skips files that already exist unless `--force` is used.
+
+### Flags
+
+- `--force`: overwrite existing files
+- `--ai-profile <name>`: set the default AI profile in the generated config
+
+### Examples
+
+```bash
+# Initialize with defaults
+governor init
+
+# Initialize with a specific AI profile
+governor init --ai-profile openai
+
+# Re-initialize, overwriting existing files
+governor init --force
+```
+
+If run outside a git repository, Governor warns and initializes in the current directory.
 
 ## CI/CD
 

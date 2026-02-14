@@ -38,11 +38,32 @@ This copies the binary to `~/.local/bin/governor`. Make sure `~/.local/bin` is i
 governor help
 ```
 
-You should see the usage summary listing the `audit`, `isolate`, and `checks` commands.
+You should see the usage summary listing the `init`, `audit`, `isolate`, and `checks` commands.
 
 ## Your First Audit
 
-### 1. Run an audit
+### 1. Initialize the workspace (optional)
+
+Run `governor init` inside your repository to scaffold the `.governor/` directory:
+
+```bash
+governor init
+```
+
+This creates:
+- `.governor/checks/` for custom check definitions
+- `.governor/.gitignore` to keep runs out of version control
+- `.governor/config.yaml` with commented defaults you can customize
+
+This step is optional — Governor creates the `runs/` directory automatically when you run an audit. But initializing upfront gives you a config file and checks directory ready for team use.
+
+If you want to set an AI profile at init time:
+
+```bash
+governor init --ai-profile openai
+```
+
+### 2. Run an audit
 
 Point Governor at any source folder or `.zip` archive:
 
@@ -57,7 +78,7 @@ That's it. Governor will:
 3. **Execute** checks in parallel (up to 3 workers by default).
 4. **Generate reports** with deduplicated findings.
 
-### 2. Watch progress
+### 3. Watch progress
 
 If you're running in an interactive terminal, Governor displays a live TUI showing worker status, durations, and events. In non-interactive environments (CI, pipes), it falls back to plain log output.
 
@@ -71,7 +92,7 @@ governor audit ./my-app --tui
 governor audit ./my-app --no-tui
 ```
 
-### 3. Review the summary
+### 4. Review the summary
 
 When the audit completes, Governor prints a summary to stdout:
 
