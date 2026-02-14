@@ -7,13 +7,13 @@
 <p align="center"><em>Let's make vibe coding safe.</em></p>
 
 <p align="center">
-  <a href="https://github.com/OWNER/REPO/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/OWNER/REPO/ci.yml?branch=main&style=for-the-badge&label=build%20%26%20test" alt="Build & Test"></a>
-  <a href="https://github.com/OWNER/REPO/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/OWNER/REPO/release.yml?style=for-the-badge&label=release%20artifacts" alt="Release Artifacts"></a>
+  <a href="https://github.com/ulsc/governor/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ulsc/governor/ci.yml?branch=main&style=for-the-badge&label=build%20%26%20test" alt="Build & Test"></a>
+  <a href="https://github.com/ulsc/governor/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/ulsc/governor/release.yml?style=for-the-badge&label=release%20artifacts" alt="Release Artifacts"></a>
 </p>
 
 Governor is an extensible CLI for security-auditing AI-generated applications.
 
-It is designed for teams with many “Citizen Developer” apps and gives you:
+It's designed to give you:
 - repeatable security audits with machine-readable output,
 - built-in + organization-specific custom checks,
 - a check-extraction workflow from internal security documents,
@@ -211,9 +211,6 @@ To trigger release artifacts:
 git tag v0.1.0
 git push origin v0.1.0
 ```
-
-Badge note:
-- Replace `OWNER/REPO` in the badge URLs above with your actual GitHub org/user and repository name.
 
 ## Audit Command
 
