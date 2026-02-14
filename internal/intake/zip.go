@@ -2,16 +2,23 @@ package intake
 
 import (
 	"archive/zip"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"governor/internal/model"
 )
 
-const zipEntryLimitMultiplier = 20
+const (
+	zipEntryLimitMultiplier    = 20
+	maxCompressionRatio        = 100
+	maxZipEntryUncompressBytes = 1024 * 1024 * 1024 // 1 GB per entry
+	zipExtractionTimeout       = 5 * time.Minute
+)
 
 func stageZipToWorkspace(zipPath string, destDir string, manifest *model.InputManifest, maxFiles int, maxBytes int64) error {
 	r, err := zip.OpenReader(zipPath)
@@ -35,6 +42,7 @@ func stageZipToWorkspace(zipPath string, destDir string, manifest *model.InputMa
 		return fmt.Errorf("zip entry count exceeds limit: %d > %d", len(r.File), maxEntries)
 	}
 
+	// Pre-scan: check compression ratios and individual entry sizes.
 	var projectedIncludedBytes int64
 	for _, f := range r.File {
 		cleanName, err := cleanZipEntryName(f.Name)
@@ -47,6 +55,20 @@ func stageZipToWorkspace(zipPath string, destDir string, manifest *model.InputMa
 		if f.FileInfo().IsDir() || strings.HasSuffix(cleanName, "/") {
 			continue
 		}
+
+		uncompressed := f.UncompressedSize64
+		compressed := f.CompressedSize64
+
+		// Check per-entry uncompressed size limit.
+		if uncompressed > maxZipEntryUncompressBytes {
+			return fmt.Errorf("zip entry %s uncompressed size exceeds limit: %d > %d", cleanName, uncompressed, maxZipEntryUncompressBytes)
+		}
+
+		// Check compression ratio (zip bomb detection).
+		if compressed > 0 && uncompressed/compressed > maxCompressionRatio {
+			return fmt.Errorf("zip entry %s has suspicious compression ratio: %d:1 (limit %d:1)", cleanName, uncompressed/compressed, maxCompressionRatio)
+		}
+
 		if reason, skip := skipFile(filepath.Base(cleanName), cleanName, f.FileInfo().Size(), f.Mode()); skip {
 			if reason == "skip_dir" {
 				continue
@@ -59,7 +81,16 @@ func stageZipToWorkspace(zipPath string, destDir string, manifest *model.InputMa
 		}
 	}
 
+	// Extract with timeout context.
+	ctx, cancel := context.WithTimeout(context.Background(), zipExtractionTimeout)
+	defer cancel()
+
 	for _, f := range r.File {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("zip extraction timed out after %s", zipExtractionTimeout)
+		default:
+		}
 		if err := extractZipFile(destAbs, f, manifest, maxFiles, maxBytes); err != nil {
 			return err
 		}
