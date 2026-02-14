@@ -18,6 +18,7 @@ import (
 	"governor/internal/app"
 	"governor/internal/checks"
 	"governor/internal/checkstui"
+	"governor/internal/config"
 	"governor/internal/extractor"
 	"governor/internal/intake"
 	"governor/internal/isolation"
@@ -112,6 +113,44 @@ func runAudit(args []string) error {
 		// valid
 	default:
 		return usageError("usage: governor audit <path-or-zip> [flags]")
+	}
+
+	cfg, cfgErr := config.Load()
+	if cfgErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", cfgErr)
+	}
+	setFlags := flagsExplicitlySet(fs)
+	applyConfig(cfg, setFlags, map[string]*string{
+		"ai-profile":     aiProfile,
+		"ai-provider":    aiProvider,
+		"ai-model":       aiModel,
+		"ai-auth-mode":   aiAuthMode,
+		"ai-base-url":    aiBaseURL,
+		"ai-api-key-env": aiAPIKeyEnv,
+		"execution-mode": executionMode,
+		"checks-dir":     checksDir,
+		"fail-on":        failOn,
+		"baseline":       baseline,
+	}, map[string]*int{
+		"workers":   workers,
+		"max-files": maxFiles,
+	}, map[string]*bool{
+		"verbose":          verbose,
+		"no-custom-checks": noCustomChecks,
+	})
+	if _, ok := setFlags["ai-bin"]; !ok && cfg.AIBin != "" {
+		aiBin = cfg.AIBin
+	}
+	if _, ok := setFlags["ai-sandbox"]; !ok && cfg.AISandbox != "" {
+		aiSandbox = cfg.AISandbox
+	}
+	if _, ok := setFlags["max-bytes"]; !ok && cfg.MaxBytes != nil {
+		*maxBytes = *cfg.MaxBytes
+	}
+	if _, ok := setFlags["timeout"]; !ok && cfg.Timeout != "" {
+		if d, parseErr := time.ParseDuration(cfg.Timeout); parseErr == nil {
+			*timeout = d
+		}
 	}
 
 	if *workers < 1 || *workers > 3 {
@@ -1673,6 +1712,67 @@ func printUsage() {
 	fmt.Println("  --no-custom-checks  Disable custom check loading")
 	fmt.Println("  --keep-workspace-error  Retain staged workspace on warning/failed runs (default deletes)")
 	fmt.Println("  --fail-on <sev>     Exit non-zero if findings meet/exceed severity (critical|high|medium|low|info)")
+}
+
+func flagsExplicitlySet(fs *flag.FlagSet) map[string]struct{} {
+	set := map[string]struct{}{}
+	fs.Visit(func(f *flag.Flag) {
+		set[f.Name] = struct{}{}
+	})
+	return set
+}
+
+func applyConfig(cfg config.Config, setFlags map[string]struct{},
+	strFlags map[string]*string,
+	intFlags map[string]*int,
+	boolFlags map[string]*bool,
+) {
+	cfgStrMap := map[string]string{
+		"ai-profile":     cfg.AIProfile,
+		"ai-provider":    cfg.AIProvider,
+		"ai-model":       cfg.AIModel,
+		"ai-auth-mode":   cfg.AIAuthMode,
+		"ai-base-url":    cfg.AIBaseURL,
+		"ai-api-key-env": cfg.AIAPIKeyEnv,
+		"execution-mode": cfg.ExecutionMode,
+		"checks-dir":     cfg.ChecksDir,
+		"fail-on":        cfg.FailOn,
+		"baseline":       cfg.Baseline,
+	}
+	for name, ptr := range strFlags {
+		if _, explicit := setFlags[name]; explicit {
+			continue
+		}
+		if val, ok := cfgStrMap[name]; ok && val != "" {
+			*ptr = val
+		}
+	}
+
+	cfgIntMap := map[string]*int{
+		"workers":   cfg.Workers,
+		"max-files": cfg.MaxFiles,
+	}
+	for name, ptr := range intFlags {
+		if _, explicit := setFlags[name]; explicit {
+			continue
+		}
+		if cfgVal, ok := cfgIntMap[name]; ok && cfgVal != nil {
+			*ptr = *cfgVal
+		}
+	}
+
+	cfgBoolMap := map[string]*bool{
+		"verbose":          cfg.Verbose,
+		"no-custom-checks": cfg.NoCustom,
+	}
+	for name, ptr := range boolFlags {
+		if _, explicit := setFlags[name]; explicit {
+			continue
+		}
+		if cfgVal, ok := cfgBoolMap[name]; ok && cfgVal != nil {
+			*ptr = *cfgVal
+		}
+	}
 }
 
 type listFlag struct {
