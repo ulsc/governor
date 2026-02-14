@@ -26,6 +26,7 @@ import (
 	"governor/internal/progress"
 	"governor/internal/trust"
 	"governor/internal/tui"
+	"governor/internal/update"
 	"governor/internal/version"
 	"governor/internal/worker"
 )
@@ -48,6 +49,7 @@ func Execute(args []string) error {
 		return runClear(args[1:])
 	case "version", "--version", "-v":
 		fmt.Println("governor " + version.Version)
+		update.PrintNotice(<-update.CheckAsync())
 		return nil
 	case "help", "--help", "-h":
 		printUsage()
@@ -193,6 +195,8 @@ func runAudit(args []string) error {
 		sandboxValue = ""
 	}
 
+	updateCh := update.CheckAsync()
+
 	selection, err := checks.ResolveAuditSelection(checks.AuditSelectionOptions{
 		ChecksDir:      *checksDir,
 		NoCustomChecks: *noCustomChecks,
@@ -288,6 +292,7 @@ func runAudit(args []string) error {
 			return result.err
 		}
 		printAuditSummary(result.report, result.paths)
+		update.PrintNotice(<-updateCh)
 		return checkFailOn(*failOn, result.report)
 	}
 
@@ -297,6 +302,7 @@ func runAudit(args []string) error {
 		return err
 	}
 	printAuditSummary(report, paths)
+	update.PrintNotice(<-updateCh)
 
 	return checkFailOn(*failOn, report)
 }
@@ -424,6 +430,8 @@ func runIsolateAudit(args []string) error {
 		return err
 	}
 
+	updateCh := update.CheckAsync()
+
 	outDir, err := resolveIsolateOutDir(*out, time.Now().UTC())
 	if err != nil {
 		return err
@@ -467,6 +475,7 @@ func runIsolateAudit(args []string) error {
 		return nil
 	}
 	printAuditSummary(report, isolateArtifactPaths(outDir))
+	update.PrintNotice(<-updateCh)
 	return checkFailOn(*failOn, report)
 }
 
