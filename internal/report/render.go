@@ -258,6 +258,59 @@ func RenderHTML(report model.AuditReport) string {
 	b.WriteString("    }\n")
 	b.WriteString("    .muted { color: var(--muted); }\n")
 	b.WriteString("    .empty { color: var(--muted); margin: 0; }\n")
+	b.WriteString("    .filter-bar {\n")
+	b.WriteString("      display: flex;\n")
+	b.WriteString("      flex-wrap: wrap;\n")
+	b.WriteString("      gap: 8px;\n")
+	b.WriteString("      align-items: center;\n")
+	b.WriteString("      margin-bottom: 14px;\n")
+	b.WriteString("    }\n")
+	b.WriteString("    .filter-bar input[type=\"text\"] {\n")
+	b.WriteString("      flex: 1 1 200px;\n")
+	b.WriteString("      padding: 8px 12px;\n")
+	b.WriteString("      border: 1px solid var(--border);\n")
+	b.WriteString("      border-radius: 8px;\n")
+	b.WriteString("      font-size: 14px;\n")
+	b.WriteString("      outline: none;\n")
+	b.WriteString("    }\n")
+	b.WriteString("    .filter-bar input[type=\"text\"]:focus {\n")
+	b.WriteString("      border-color: #6b8afd;\n")
+	b.WriteString("      box-shadow: 0 0 0 3px rgba(107, 138, 253, 0.15);\n")
+	b.WriteString("    }\n")
+	b.WriteString("    .filter-btn {\n")
+	b.WriteString("      padding: 5px 12px;\n")
+	b.WriteString("      border: 1px solid var(--border);\n")
+	b.WriteString("      border-radius: 999px;\n")
+	b.WriteString("      background: var(--surface);\n")
+	b.WriteString("      font-size: 12px;\n")
+	b.WriteString("      font-weight: 600;\n")
+	b.WriteString("      cursor: pointer;\n")
+	b.WriteString("      text-transform: uppercase;\n")
+	b.WriteString("      letter-spacing: 0.06em;\n")
+	b.WriteString("      transition: background 0.15s, color 0.15s;\n")
+	b.WriteString("    }\n")
+	b.WriteString("    .filter-btn:hover { background: #eef2ff; }\n")
+	b.WriteString("    .filter-btn.active { background: #102033; color: #f8fbff; border-color: #102033; }\n")
+	b.WriteString("    .filter-count {\n")
+	b.WriteString("      font-size: 13px;\n")
+	b.WriteString("      color: var(--muted);\n")
+	b.WriteString("      margin-left: auto;\n")
+	b.WriteString("    }\n")
+	b.WriteString("    .finding.hidden { display: none; }\n")
+	b.WriteString("    .finding-details {\n")
+	b.WriteString("      overflow: hidden;\n")
+	b.WriteString("      transition: max-height 0.2s ease;\n")
+	b.WriteString("    }\n")
+	b.WriteString("    .finding-toggle {\n")
+	b.WriteString("      background: none;\n")
+	b.WriteString("      border: none;\n")
+	b.WriteString("      color: var(--muted);\n")
+	b.WriteString("      font-size: 12px;\n")
+	b.WriteString("      cursor: pointer;\n")
+	b.WriteString("      padding: 4px 0;\n")
+	b.WriteString("      margin-left: auto;\n")
+	b.WriteString("    }\n")
+	b.WriteString("    .finding-toggle:hover { color: var(--text); }\n")
 	b.WriteString("    code {\n")
 	b.WriteString("      background: #edf2ff;\n")
 	b.WriteString("      color: #1e3a8a;\n")
@@ -411,17 +464,48 @@ func RenderHTML(report model.AuditReport) string {
 		return sorted[i].Title < sorted[j].Title
 	})
 
+	// Collect unique categories and severities for filter buttons.
+	categories := collectUnique(sorted, func(f model.Finding) string { return strings.ToLower(strings.TrimSpace(f.Category)) })
+	severities := collectUnique(sorted, func(f model.Finding) string {
+		s := strings.ToLower(strings.TrimSpace(f.Severity))
+		if s == "" {
+			return "unknown"
+		}
+		return s
+	})
+
+	// Filter toolbar
+	b.WriteString("      <div class=\"filter-bar\">\n")
+	b.WriteString("        <input type=\"text\" id=\"finding-search\" placeholder=\"Search findings...\">\n")
+	b.WriteString("      </div>\n")
+	b.WriteString("      <div class=\"filter-bar\">\n")
+	b.WriteString("        <span style=\"font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em\">Severity:</span>\n")
+	for _, sev := range severities {
+		b.WriteString(fmt.Sprintf("        <button class=\"filter-btn\" data-filter-severity=\"%s\">%s</button>\n", htmlInline(sev), htmlInline(sev)))
+	}
+	if len(categories) > 0 {
+		b.WriteString("        <span style=\"font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-left:8px\">Category:</span>\n")
+		for _, cat := range categories {
+			b.WriteString(fmt.Sprintf("        <button class=\"filter-btn\" data-filter-category=\"%s\">%s</button>\n", htmlInline(cat), htmlInline(cat)))
+		}
+	}
+	b.WriteString("        <span class=\"filter-count\" id=\"filter-count\"></span>\n")
+	b.WriteString("      </div>\n")
+
 	for _, f := range sorted {
 		sev := strings.ToLower(strings.TrimSpace(f.Severity))
 		if sev == "" {
 			sev = "unknown"
 		}
+		cat := strings.ToLower(strings.TrimSpace(f.Category))
 
-		b.WriteString("      <article class=\"finding\">\n")
+		b.WriteString(fmt.Sprintf("      <article class=\"finding\" data-severity=\"%s\" data-category=\"%s\">\n", htmlInline(sev), htmlInline(cat)))
 		b.WriteString("        <div class=\"finding-header\">\n")
 		b.WriteString(fmt.Sprintf("          <span class=\"badge badge-%s\">%s</span>\n", severityClass(sev), htmlInline(sev)))
 		b.WriteString(fmt.Sprintf("          <h3>%s</h3>\n", htmlInline(f.Title)))
+		b.WriteString("          <button class=\"finding-toggle\" onclick=\"toggleDetails(this)\">collapse</button>\n")
 		b.WriteString("        </div>\n")
+		b.WriteString("        <div class=\"finding-details\">\n")
 		b.WriteString("        <div class=\"finding-meta\">\n")
 		b.WriteString(fmt.Sprintf("          <div><span class=\"label-inline\">ID</span><code>%s</code></div>\n", htmlInline(f.ID)))
 		b.WriteString(fmt.Sprintf("          <div><span class=\"label-inline\">Category</span><code>%s</code></div>\n", htmlInline(f.Category)))
@@ -450,10 +534,12 @@ func RenderHTML(report model.AuditReport) string {
 		b.WriteString("          <h4>Remediation</h4>\n")
 		b.WriteString(fmt.Sprintf("          <p>%s</p>\n", htmlMultiline(f.Remediation)))
 		b.WriteString("        </div>\n")
+		b.WriteString("        </div>\n") // .finding-details
 		b.WriteString("      </article>\n")
 	}
 	b.WriteString("    </section>\n")
 	b.WriteString("  </main>\n")
+	b.WriteString(htmlFilterScript())
 	b.WriteString("</body>\n")
 	b.WriteString("</html>\n")
 	return b.String()
@@ -695,4 +781,92 @@ func severityRank(s string) int {
 	default:
 		return 4
 	}
+}
+
+func collectUnique(findings []model.Finding, extract func(model.Finding) string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, f := range findings {
+		v := extract(f)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func htmlFilterScript() string {
+	return `<script>
+(function(){
+  var search = document.getElementById('finding-search');
+  var countEl = document.getElementById('filter-count');
+  var findings = document.querySelectorAll('.finding');
+  var sevBtns = document.querySelectorAll('[data-filter-severity]');
+  var catBtns = document.querySelectorAll('[data-filter-category]');
+  var activeSev = {};
+  var activeCat = {};
+
+  function toggle(map, key, btn) {
+    if (map[key]) { delete map[key]; btn.classList.remove('active'); }
+    else { map[key] = true; btn.classList.add('active'); }
+  }
+
+  sevBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      toggle(activeSev, btn.getAttribute('data-filter-severity'), btn);
+      applyFilters();
+    });
+  });
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      toggle(activeCat, btn.getAttribute('data-filter-category'), btn);
+      applyFilters();
+    });
+  });
+  if (search) {
+    search.addEventListener('input', function() { applyFilters(); });
+  }
+
+  function applyFilters() {
+    var q = (search ? search.value : '').toLowerCase();
+    var sevKeys = Object.keys(activeSev);
+    var catKeys = Object.keys(activeCat);
+    var shown = 0;
+    findings.forEach(function(el) {
+      var sev = el.getAttribute('data-severity') || '';
+      var cat = el.getAttribute('data-category') || '';
+      var text = el.textContent.toLowerCase();
+      var visible = true;
+      if (sevKeys.length > 0 && !activeSev[sev]) visible = false;
+      if (catKeys.length > 0 && !activeCat[cat]) visible = false;
+      if (q && text.indexOf(q) === -1) visible = false;
+      el.classList.toggle('hidden', !visible);
+      if (visible) shown++;
+    });
+    if (countEl) {
+      countEl.textContent = shown + ' of ' + findings.length + ' findings';
+    }
+  }
+  applyFilters();
+
+  window.toggleDetails = function(btn) {
+    var details = btn.closest('.finding').querySelector('.finding-details');
+    if (!details) return;
+    if (details.style.display === 'none') {
+      details.style.display = '';
+      btn.textContent = 'collapse';
+    } else {
+      details.style.display = 'none';
+      btn.textContent = 'expand';
+    }
+  };
+})();
+</script>
+`
 }
