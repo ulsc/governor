@@ -1,7 +1,13 @@
-# Governor
+<p align="center">
+  <img src="docs/assets/governor_logo.webp" alt="Governor" width="200">
+</p>
 
-[![Build & Test](https://img.shields.io/github/actions/workflow/status/OWNER/REPO/ci.yml?branch=main&style=for-the-badge&label=build%20%26%20test)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
-[![Release Artifacts](https://img.shields.io/github/actions/workflow/status/OWNER/REPO/release.yml?style=for-the-badge&label=release%20artifacts)](https://github.com/OWNER/REPO/actions/workflows/release.yml)
+<h1 align="center">Governor</h1>
+
+<p align="center">
+  <a href="https://github.com/OWNER/REPO/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/OWNER/REPO/ci.yml?branch=main&style=for-the-badge&label=build%20%26%20test" alt="Build & Test"></a>
+  <a href="https://github.com/OWNER/REPO/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/OWNER/REPO/release.yml?style=for-the-badge&label=release%20artifacts" alt="Release Artifacts"></a>
+</p>
 
 Governor is an extensible CLI for security-auditing AI-generated applications.
 
