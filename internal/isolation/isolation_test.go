@@ -225,6 +225,20 @@ func TestBuildInnerGovernorArgs_ForwardsKeepWorkspaceError(t *testing.T) {
 	}
 }
 
+func TestBuildInnerGovernorArgs_ForwardsZeroTimeout(t *testing.T) {
+	args := buildInnerGovernorArgs(AuditOptions{
+		Workers:  3,
+		MaxFiles: 10,
+		MaxBytes: 1000,
+		Timeout:  0,
+	}, false)
+
+	got := strings.Join(args, " ")
+	if !strings.Contains(got, "--timeout 0s") {
+		t.Fatalf("expected explicit zero timeout forwarding, got: %s", got)
+	}
+}
+
 func TestValidateOptions_AllowsEmptyOutDir(t *testing.T) {
 	opts := normalizeOptions(AuditOptions{
 		InputPath: "/tmp/input",
