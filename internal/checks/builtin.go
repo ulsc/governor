@@ -19,6 +19,8 @@ func Builtins() []Definition {
 			CategoriesHint: []string{"auth", "input_validation", "data_exposure", "rce"},
 			SeverityHint:   "high",
 			ConfidenceHint: 0.8,
+			CWE:            "CWE-284",
+			OWASP:          "A01:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -40,6 +42,8 @@ func Builtins() []Definition {
 			CategoriesHint: []string{"supply_chain", "dependencies", "ci_cd"},
 			SeverityHint:   "medium",
 			ConfidenceHint: 0.7,
+			CWE:            "CWE-829",
+			OWASP:          "A06:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -61,6 +65,8 @@ func Builtins() []Definition {
 			CategoriesHint: []string{"secrets", "configuration"},
 			SeverityHint:   "high",
 			ConfidenceHint: 0.8,
+			CWE:            "CWE-798",
+			OWASP:          "A07:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -136,6 +142,8 @@ func Builtins() []Definition {
 			CategoriesHint: []string{"prompt_injection", "input_validation"},
 			SeverityHint:   "high",
 			ConfidenceHint: 0.75,
+			CWE:            "CWE-77",
+			OWASP:          "A03:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -232,6 +240,8 @@ func Builtins() []Definition {
 			CategoriesHint: []string{"secrets", "credentials"},
 			SeverityHint:   "critical",
 			ConfidenceHint: 0.8,
+			CWE:            "CWE-798",
+			OWASP:          "A07:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -316,6 +326,8 @@ func Builtins() []Definition {
 			CategoriesHint: []string{"rce", "input_validation"},
 			SeverityHint:   "critical",
 			ConfidenceHint: 0.75,
+			CWE:            "CWE-78",
+			OWASP:          "A03:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -389,6 +401,8 @@ func Builtins() []Definition {
 			CategoriesHint: []string{"path_traversal", "input_validation"},
 			SeverityHint:   "high",
 			ConfidenceHint: 0.7,
+			CWE:            "CWE-22",
+			OWASP:          "A01:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -485,6 +499,8 @@ func Builtins() []Definition {
 			CategoriesHint: []string{"crypto", "configuration"},
 			SeverityHint:   "high",
 			ConfidenceHint: 0.75,
+			CWE:            "CWE-327",
+			OWASP:          "A02:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -593,6 +609,8 @@ func Builtins() []Definition {
 			CategoriesHint: []string{"sql_injection", "input_validation"},
 			SeverityHint:   "critical",
 			ConfidenceHint: 0.75,
+			CWE:            "CWE-89",
+			OWASP:          "A03:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -619,6 +637,8 @@ func Builtins() []Definition {
 			CategoriesHint: []string{"ssrf", "input_validation"},
 			SeverityHint:   "high",
 			ConfidenceHint: 0.75,
+			CWE:            "CWE-918",
+			OWASP:          "A10:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -643,6 +663,8 @@ Note: Focus on endpoints that are clearly sensitive or expensive. Not every endp
 			CategoriesHint: []string{"dos", "auth", "api_security"},
 			SeverityHint:   "medium",
 			ConfidenceHint: 0.65,
+			CWE:            "CWE-770",
+			OWASP:          "A04:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -668,6 +690,8 @@ Note: Focus on endpoints that are clearly sensitive or expensive. Not every endp
 			CategoriesHint: []string{"deserialization", "rce", "input_validation"},
 			SeverityHint:   "high",
 			ConfidenceHint: 0.7,
+			CWE:            "CWE-502",
+			OWASP:          "A08:2021",
 			Origin: Origin{
 				Method: "builtin",
 			},
@@ -693,6 +717,8 @@ Note: Focus on endpoints that are clearly sensitive or expensive. Not every endp
 			CategoriesHint: []string{"xss", "input_validation"},
 			SeverityHint:   "high",
 			ConfidenceHint: 0.75,
+			CWE:            "CWE-79",
+			OWASP:          "A03:2021",
 			Scope: Scope{
 				IncludeGlobs: []string{
 					"**/*.html", "**/*.htm", "**/*.jsx", "**/*.tsx", "**/*.js", "**/*.ts",
@@ -724,6 +750,8 @@ Note: Focus on endpoints that are clearly sensitive or expensive. Not every endp
 			CategoriesHint: []string{"csrf", "auth"},
 			SeverityHint:   "medium",
 			ConfidenceHint: 0.7,
+			CWE:            "CWE-352",
+			OWASP:          "A01:2021",
 			Scope: Scope{
 				IncludeGlobs: []string{
 					"**/*.js", "**/*.ts", "**/*.jsx", "**/*.tsx",

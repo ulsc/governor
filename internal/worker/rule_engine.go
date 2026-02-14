@@ -274,6 +274,8 @@ func buildRuleFinding(checkDef checks.Definition, detector checks.RuleDetector, 
 		Remediation: remediation,
 		FileRefs:    []string{filePath},
 		Confidence:  confidence,
+		CWE:         strings.TrimSpace(checkDef.CWE),
+		OWASP:       strings.TrimSpace(checkDef.OWASP),
 		SourceTrack: checkDef.ID,
 		CreatedAt:   now,
 	}

@@ -513,6 +513,12 @@ func RenderHTML(report model.AuditReport) string {
 		if f.Confidence > 0 {
 			b.WriteString(fmt.Sprintf("          <div><span class=\"label-inline\">Confidence</span><code>%.2f</code></div>\n", f.Confidence))
 		}
+		if strings.TrimSpace(f.CWE) != "" {
+			b.WriteString(fmt.Sprintf("          <div><span class=\"label-inline\">CWE</span><a href=\"https://cwe.mitre.org/data/definitions/%s.html\" target=\"_blank\" rel=\"noopener\">%s</a></div>\n", htmlInline(cweNumber(f.CWE)), htmlInline(f.CWE)))
+		}
+		if strings.TrimSpace(f.OWASP) != "" {
+			b.WriteString(fmt.Sprintf("          <div><span class=\"label-inline\">OWASP</span><a href=\"https://owasp.org/Top10/%s/\" target=\"_blank\" rel=\"noopener\">%s</a></div>\n", htmlInline(f.OWASP), htmlInline(f.OWASP)))
+		}
 		b.WriteString("        </div>\n")
 		if len(f.FileRefs) > 0 {
 			b.WriteString("        <h4>File Refs</h4>\n")
@@ -663,6 +669,12 @@ func RenderMarkdown(report model.AuditReport) string {
 		if f.Confidence > 0 {
 			b.WriteString(fmt.Sprintf("- Confidence: `%.2f`\n", f.Confidence))
 		}
+		if strings.TrimSpace(f.CWE) != "" {
+			b.WriteString(fmt.Sprintf("- CWE: [%s](https://cwe.mitre.org/data/definitions/%s.html)\n", f.CWE, cweNumber(f.CWE)))
+		}
+		if strings.TrimSpace(f.OWASP) != "" {
+			b.WriteString(fmt.Sprintf("- OWASP: [%s](https://owasp.org/Top10/%s/)\n", f.OWASP, f.OWASP))
+		}
 		b.WriteString("- Evidence:\n")
 		b.WriteString(indentBlock(redact.Text(f.Evidence)))
 		b.WriteString("- Impact:\n")
@@ -781,6 +793,14 @@ func severityRank(s string) int {
 	default:
 		return 4
 	}
+}
+
+func cweNumber(cwe string) string {
+	cwe = strings.TrimSpace(cwe)
+	if strings.HasPrefix(strings.ToUpper(cwe), "CWE-") {
+		return cwe[4:]
+	}
+	return cwe
 }
 
 func collectUnique(findings []model.Finding, extract func(model.Finding) string) []string {

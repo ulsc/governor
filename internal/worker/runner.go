@@ -319,6 +319,7 @@ func runRuleTrack(
 	}
 
 	normalized := normalizeFindings(payload.Findings, checkDef.ID)
+	applyCheckReferences(normalized, checkDef)
 	completed := time.Now().UTC()
 	res := model.WorkerResult{
 		Track:        checkDef.ID,
@@ -961,6 +962,22 @@ func normalizeFindings(in []model.Finding, track string) []model.Finding {
 		out = append(out, f)
 	}
 	return out
+}
+
+func applyCheckReferences(findings []model.Finding, checkDef checks.Definition) {
+	cwe := strings.TrimSpace(checkDef.CWE)
+	owasp := strings.TrimSpace(checkDef.OWASP)
+	if cwe == "" && owasp == "" {
+		return
+	}
+	for i := range findings {
+		if findings[i].CWE == "" {
+			findings[i].CWE = cwe
+		}
+		if findings[i].OWASP == "" {
+			findings[i].OWASP = owasp
+		}
+	}
 }
 
 func redactWorkerOutput(in workerOutput) workerOutput {

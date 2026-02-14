@@ -22,6 +22,8 @@ type Finding struct {
 	Remediation string    `json:"remediation"`
 	FileRefs    []string  `json:"file_refs,omitempty"`
 	Confidence  float64   `json:"confidence,omitempty"`
+	CWE         string    `json:"cwe,omitempty"`
+	OWASP       string    `json:"owasp,omitempty"`
 	SourceTrack string    `json:"source_track"`
 	CreatedAt   time.Time `json:"created_at,omitempty"`
 }

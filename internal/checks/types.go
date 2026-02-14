@@ -117,6 +117,8 @@ type Definition struct {
 	CategoriesHint []string  `yaml:"categories_hint,omitempty" json:"categories_hint,omitempty"`
 	SeverityHint   string    `yaml:"severity_hint,omitempty" json:"severity_hint,omitempty"`
 	ConfidenceHint float64   `yaml:"confidence_hint,omitempty" json:"confidence_hint,omitempty"`
+	CWE            string    `yaml:"cwe,omitempty" json:"cwe,omitempty"`
+	OWASP          string    `yaml:"owasp,omitempty" json:"owasp,omitempty"`
 	CreatedAt      time.Time `yaml:"created_at,omitempty" json:"created_at,omitempty"`
 	UpdatedAt      time.Time `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
 	Origin         Origin    `yaml:"origin,omitempty" json:"origin,omitempty"`
