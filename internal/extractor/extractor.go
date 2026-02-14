@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"governor/internal/ai"
 	"governor/internal/checks"
-	"governor/internal/envsafe"
 )
 
 const (
@@ -26,6 +26,7 @@ const (
 )
 
 type Options struct {
+	AIRuntime ai.Runtime
 	Inputs    []string
 	ChecksDir string
 	CodexBin  string
@@ -65,6 +66,12 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if strings.TrimSpace(opts.CodexBin) == "" {
 		opts.CodexBin = "codex"
 	}
+	if strings.TrimSpace(opts.AIRuntime.Provider) == "" {
+		opts.AIRuntime.Provider = ai.ProviderCodexCLI
+	}
+	if strings.TrimSpace(opts.AIRuntime.Bin) == "" {
+		opts.AIRuntime.Bin = opts.CodexBin
+	}
 	if opts.MaxChecks <= 0 {
 		opts.MaxChecks = 10
 	}
@@ -73,6 +80,12 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 	if normalizeSandboxMode(opts.Sandbox) == "" {
 		opts.Sandbox = "read-only"
+	}
+	if strings.TrimSpace(opts.AIRuntime.ExecutionMode) == "" {
+		opts.AIRuntime.ExecutionMode = opts.Mode
+	}
+	if strings.TrimSpace(opts.AIRuntime.SandboxMode) == "" {
+		opts.AIRuntime.SandboxMode = opts.Sandbox
 	}
 
 	checksDir, err := checks.ResolveWriteDir(opts.ChecksDir)
@@ -92,7 +105,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	promptText := buildPrompt(docs, opts.MaxChecks)
-	out, err := runExtractorModel(ctx, opts.CodexBin, opts.Mode, opts.Sandbox, promptText)
+	out, err := runExtractorModel(ctx, opts.AIRuntime, promptText)
 	if err != nil {
 		return Result{Warnings: warnings}, err
 	}
@@ -144,7 +157,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}, nil
 }
 
-func runExtractorModel(ctx context.Context, codexBin string, mode string, sandbox string, promptText string) (extractorOutput, error) {
+func runExtractorModel(ctx context.Context, runtime ai.Runtime, promptText string) (extractorOutput, error) {
 	tmpDir, err := os.MkdirTemp("", "governor-check-extract-*")
 	if err != nil {
 		return extractorOutput{}, fmt.Errorf("create temp dir: %w", err)
@@ -157,27 +170,20 @@ func runExtractorModel(ctx context.Context, codexBin string, mode string, sandbo
 	if err := os.WriteFile(schemaPath, []byte(extractorSchema), 0o600); err != nil {
 		return extractorOutput{}, fmt.Errorf("write extractor schema: %w", err)
 	}
-
-	args := []string{
-		"exec",
-		"--skip-git-repo-check",
+	workspace, err := os.Getwd()
+	if err != nil {
+		return extractorOutput{}, fmt.Errorf("resolve cwd for extractor run: %w", err)
 	}
-	if normalizeExecutionMode(mode) == "sandboxed" {
-		args = append(args, "-s", normalizeSandboxMode(sandbox))
-	}
-	args = append(args,
-		"--output-schema", schemaPath,
-		"-o", outputPath,
-		"--color", "never",
-		"-",
-	)
-	cmd := exec.CommandContext(ctx, codexBin, args...)
-	cmd.Stdin = strings.NewReader(promptText)
-	cmd.Env = buildExtractorEnv(os.Environ())
-	logBytes, runErr := cmd.CombinedOutput()
+	logBytes, runErr := ai.ExecuteTrack(ctx, runtime, ai.ExecutionInput{
+		Workspace:  workspace,
+		SchemaPath: schemaPath,
+		OutputPath: outputPath,
+		PromptText: promptText,
+		Env:        os.Environ(),
+	})
 	_ = os.WriteFile(logPath, logBytes, 0o600)
 	if runErr != nil {
-		return extractorOutput{}, fmt.Errorf("extract checks with codex: %w (log: %s)", runErr, logPath)
+		return extractorOutput{}, fmt.Errorf("extract checks with ai provider %q: %w (log: %s)", runtime.Provider, runErr, logPath)
 	}
 
 	payload, err := os.ReadFile(outputPath)
@@ -214,10 +220,6 @@ func normalizeSandboxMode(mode string) string {
 	default:
 		return ""
 	}
-}
-
-func buildExtractorEnv(in []string) []string {
-	return envsafe.CodexEnv(in)
 }
 
 type docSet []doc

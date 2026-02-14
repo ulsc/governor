@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var codexAllowedEnv = map[string]struct{}{
+var aiAllowedEnv = map[string]struct{}{
 	"PATH":            {},
 	"HOME":            {},
 	"USER":            {},
@@ -45,11 +45,30 @@ var codexAllowedEnv = map[string]struct{}{
 	"CODEX_HOME":               {},
 	"CODEX_CONFIG":             {},
 	"CODEX_PROFILE":            {},
+	"AI_API_KEY":               {},
+	"AI_BASE_URL":              {},
+	"AI_MODEL":                 {},
+	"AI_PROVIDER":              {},
+	"AI_PROFILE":               {},
+	"ANTHROPIC_API_KEY":        {},
+	"ANTHROPIC_BASE_URL":       {},
+	"GEMINI_API_KEY":           {},
+	"GOOGLE_API_KEY":           {},
+	"OPENROUTER_API_KEY":       {},
+	"MISTRAL_API_KEY":          {},
+	"DEEPSEEK_API_KEY":         {},
+	"MINIMAX_API_KEY":          {},
+	"XAI_API_KEY":              {},
+	"PERPLEXITY_API_KEY":       {},
+	"CHATGLM_API_KEY":          {},
+	"HUGGINGFACEHUB_API_TOKEN": {},
+	"HF_TOKEN":                 {},
+	"OLLAMA_HOST":              {},
 }
 
-// CodexEnv returns a deterministic, explicit env allowlist for Codex subprocesses.
-func CodexEnv(in []string) []string {
-	outMap := make(map[string]string, len(codexAllowedEnv))
+// AIEnv returns a deterministic, explicit env allowlist for AI subprocesses.
+func AIEnv(in []string) []string {
+	outMap := make(map[string]string, len(aiAllowedEnv))
 	for _, kv := range in {
 		idx := -1
 		for i := 0; i < len(kv); i++ {
@@ -63,7 +82,7 @@ func CodexEnv(in []string) []string {
 		}
 		key := kv[:idx]
 		val := kv[idx+1:]
-		if _, ok := codexAllowedEnv[key]; ok {
+		if _, ok := aiAllowedEnv[key]; ok {
 			if key == "PATH" {
 				val = sanitizePathValue(val)
 			}
@@ -85,6 +104,11 @@ func CodexEnv(in []string) []string {
 		out = append(out, k+"="+outMap[k])
 	}
 	return out
+}
+
+// CodexEnv is kept as a compatibility wrapper and forwards to AIEnv.
+func CodexEnv(in []string) []string {
+	return AIEnv(in)
 }
 
 func sanitizePathValue(in string) string {

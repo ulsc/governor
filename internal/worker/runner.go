@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"governor/internal/ai"
 	"governor/internal/checks"
 	"governor/internal/envsafe"
 	"governor/internal/model"
@@ -23,6 +24,7 @@ import (
 )
 
 type RunOptions struct {
+	AIRuntime    ai.Runtime
 	CodexBin     string
 	OutDir       string
 	MaxParallel  int
@@ -60,6 +62,18 @@ type indexedResult struct {
 func RunAll(ctx context.Context, workspace string, manifest model.InputManifest, checkDefs []checks.Definition, opts RunOptions) []model.WorkerResult {
 	if opts.CodexBin == "" {
 		opts.CodexBin = "codex"
+	}
+	if strings.TrimSpace(opts.AIRuntime.Provider) == "" {
+		opts.AIRuntime.Provider = ai.ProviderCodexCLI
+	}
+	if strings.TrimSpace(opts.AIRuntime.Bin) == "" {
+		opts.AIRuntime.Bin = opts.CodexBin
+	}
+	if strings.TrimSpace(opts.AIRuntime.ExecutionMode) == "" {
+		opts.AIRuntime.ExecutionMode = opts.Mode
+	}
+	if strings.TrimSpace(opts.AIRuntime.SandboxMode) == "" {
+		opts.AIRuntime.SandboxMode = opts.SandboxMode
 	}
 	if opts.Sink == nil {
 		opts.Sink = progress.NoopSink{}
@@ -533,22 +547,26 @@ func runCodexAttempt(
 	outputPath string,
 	promptText string,
 ) ([]byte, error) {
-	args := buildCodexExecArgs(opts, workspace, schemaPath, outputPath)
-
-	cmd := exec.CommandContext(ctx, opts.CodexBin, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Stdin = strings.NewReader(promptText)
-	cmd.Env = buildWorkerEnv(os.Environ())
-	cmdDone := make(chan struct{})
-	defer close(cmdDone)
-	go func() {
-		select {
-		case <-ctx.Done():
-			killCommandProcessGroup(cmd)
-		case <-cmdDone:
-		}
-	}()
-	return cmd.CombinedOutput()
+	runtime := opts.AIRuntime
+	if strings.TrimSpace(runtime.Provider) == "" {
+		runtime.Provider = ai.ProviderCodexCLI
+	}
+	if strings.TrimSpace(runtime.Bin) == "" {
+		runtime.Bin = opts.CodexBin
+	}
+	if strings.TrimSpace(runtime.ExecutionMode) == "" {
+		runtime.ExecutionMode = opts.Mode
+	}
+	if strings.TrimSpace(runtime.SandboxMode) == "" {
+		runtime.SandboxMode = opts.SandboxMode
+	}
+	return ai.ExecuteTrack(ctx, runtime, ai.ExecutionInput{
+		Workspace:  workspace,
+		SchemaPath: schemaPath,
+		OutputPath: outputPath,
+		PromptText: promptText,
+		Env:        buildWorkerEnv(os.Environ()),
+	})
 }
 
 func buildCodexExecArgs(opts RunOptions, workspace string, schemaPath string, outputPath string) []string {
@@ -984,7 +1002,7 @@ func normalizeSandboxMode(mode string) string {
 }
 
 func buildWorkerEnv(in []string) []string {
-	return envsafe.CodexEnv(in)
+	return envsafe.AIEnv(in)
 }
 
 func normalizeSeverity(s string) string {
