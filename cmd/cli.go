@@ -86,7 +86,7 @@ func runAudit(args []string) error {
 
 	maxFiles := fs.Int("max-files", 20000, "Maximum included file count")
 	maxBytes := fs.Int64("max-bytes", 250*1024*1024, "Maximum included file bytes")
-	timeout := fs.Duration("timeout", 4*time.Minute, "Per-worker timeout")
+	timeout := fs.Duration("timeout", 4*time.Minute, "Per-worker timeout (0 disables timeout)")
 	verbose := fs.Bool("verbose", false, "Enable verbose logs")
 	enableTUI := fs.Bool("tui", false, "Enable interactive terminal UI")
 	disableTUI := fs.Bool("no-tui", false, "Disable interactive terminal UI")
@@ -169,8 +169,8 @@ func runAudit(args []string) error {
 	if *maxBytes <= 0 {
 		return errors.New("--max-bytes must be > 0")
 	}
-	if *timeout <= 0 {
-		return errors.New("--timeout must be > 0")
+	if *timeout < 0 {
+		return errors.New("--timeout must be >= 0 (0 disables timeout)")
 	}
 	if strings.TrimSpace(aiBin) == "" {
 		return errors.New("--ai-bin cannot be empty")
@@ -346,7 +346,7 @@ func runIsolateAudit(args []string) error {
 
 	maxFiles := fs.Int("max-files", 20000, "Maximum included file count")
 	maxBytes := fs.Int64("max-bytes", 250*1024*1024, "Maximum included file bytes")
-	timeout := fs.Duration("timeout", 4*time.Minute, "Per-worker timeout")
+	timeout := fs.Duration("timeout", 4*time.Minute, "Per-worker timeout (0 disables timeout)")
 	verbose := fs.Bool("verbose", false, "Enable verbose logs")
 	checksDir := fs.String("checks-dir", "", "Checks directory mounted read-only (optional)")
 	noCustomChecks := fs.Bool("no-custom-checks", false, "Run built-in checks only")
@@ -1244,7 +1244,7 @@ func runChecksTest(args []string) error {
 	var aiSandbox string
 	fs.StringVar(&aiSandbox, "ai-sandbox", "read-only", "AI sandbox mode: read-only|workspace-write|danger-full-access")
 
-	timeout := fs.Duration("timeout", 4*time.Minute, "Per-worker timeout")
+	timeout := fs.Duration("timeout", 4*time.Minute, "Per-worker timeout (0 disables timeout)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1801,7 +1801,7 @@ func printUsage() {
 	fmt.Println("  --ai-sandbox <read-only|workspace-write|danger-full-access>  Sandbox mode for sandboxed execution")
 	fmt.Println("  --max-files <n>     Included file count cap (default 20000)")
 	fmt.Println("  --max-bytes <n>     Included file bytes cap (default 262144000)")
-	fmt.Println("  --timeout <dur>     Per-worker timeout (default 4m)")
+	fmt.Println("  --timeout <dur>     Per-worker timeout (default 4m, 0 disables timeout)")
 	fmt.Println("  --verbose           Verbose execution logs")
 	fmt.Println("  --checks-dir <dir>  Custom checks dir (default ./.governor/checks + ~/.governor/checks, repo first)")
 	fmt.Println("  --only-check <id>   Run only specified check ID (repeatable)")
@@ -1833,6 +1833,7 @@ func printUsage() {
 	fmt.Println("  --execution-mode <sandboxed|host>  Inner worker execution mode (default host)")
 	fmt.Println("  --ai-sandbox <read-only|workspace-write|danger-full-access>  Inner sandbox mode (used when execution is sandboxed)")
 	fmt.Println("  --workers <1-3>     Max worker processes inside isolated run (default 3)")
+	fmt.Println("  --timeout <dur>     Per-worker timeout inside isolated run (default 4m, 0 disables timeout)")
 	fmt.Println("  --checks-dir <dir>  Mount custom checks read-only into isolated run")
 	fmt.Println("  --only-check <id>   Run only specified check ID (repeatable)")
 	fmt.Println("  --skip-check <id>   Skip specified check ID (repeatable)")

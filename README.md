@@ -279,7 +279,7 @@ governor audit <path-or-zip> [flags]
 - `--no-custom-checks`: run built-in checks only
 - `--tui`: force interactive TUI
 - `--no-tui`: force plain mode
-- `--timeout <duration>`: per-check timeout (default `4m`)
+- `--timeout <duration>`: per-check timeout (default `4m`, set `0` to disable)
 - `--out <dir>`: custom output directory
 - `--keep-workspace-error`: keep staged `workspace/` only for warning/failed runs (default deletes)
 

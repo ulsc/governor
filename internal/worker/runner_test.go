@@ -25,6 +25,24 @@ func TestNormalizeExecutionMode(t *testing.T) {
 	}
 }
 
+func TestTrackContext_NoTimeoutHasNoDeadline(t *testing.T) {
+	ctx, cancel := trackContext(context.Background(), 0)
+	defer cancel()
+
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("expected no deadline when timeout is disabled")
+	}
+}
+
+func TestTrackContext_PositiveTimeoutHasDeadline(t *testing.T) {
+	ctx, cancel := trackContext(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("expected deadline when timeout is positive")
+	}
+}
+
 func TestBuildWorkerEnv_Allowlist(t *testing.T) {
 	env := buildWorkerEnv([]string{
 		"PATH=/usr/bin",

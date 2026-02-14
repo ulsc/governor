@@ -697,9 +697,6 @@ func normalizeOptions(opts AuditOptions) AuditOptions {
 	if opts.MaxBytes <= 0 {
 		opts.MaxBytes = defaultMaxBytes
 	}
-	if opts.Timeout <= 0 {
-		opts.Timeout = defaultTimeout
-	}
 	if strings.TrimSpace(opts.ExecutionMode) == "" {
 		opts.ExecutionMode = defaultExecMode
 	}
@@ -722,8 +719,8 @@ func validateOptions(opts AuditOptions) error {
 	if opts.MaxBytes <= 0 {
 		return errors.New("--max-bytes must be > 0")
 	}
-	if opts.Timeout <= 0 {
-		return errors.New("--timeout must be > 0")
+	if opts.Timeout < 0 {
+		return errors.New("--timeout must be >= 0 (0 disables timeout)")
 	}
 	switch opts.Runtime {
 	case RuntimeAuto, RuntimeDocker, RuntimePodman:

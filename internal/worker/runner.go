@@ -86,7 +86,7 @@ func RunAll(ctx context.Context, workspace string, manifest model.InputManifest,
 	if opts.MaxParallel > len(checkDefs) {
 		opts.MaxParallel = len(checkDefs)
 	}
-	if opts.Timeout <= 0 {
+	if opts.Timeout < 0 {
 		opts.Timeout = 4 * time.Minute
 	}
 	if opts.RetryCount < 1 {
@@ -173,7 +173,7 @@ func runOneTrack(parent context.Context, workspace string, manifest model.InputM
 		checkDef.Scope = checks.ApplyTestFileExclusions(checkDef.Scope)
 	}
 	started := time.Now().UTC()
-	ctx, cancel := context.WithTimeout(parent, opts.Timeout)
+	ctx, cancel := trackContext(parent, opts.Timeout)
 	defer cancel()
 
 	trackName := checkDef.ID
@@ -982,6 +982,13 @@ func redactWorkerOutput(in workerOutput) workerOutput {
 		in.Findings = findings
 	}
 	return in
+}
+
+func trackContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout == 0 {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 func normalizeExecutionMode(mode string) string {

@@ -50,7 +50,7 @@ verbose: true
 | `ai_sandbox` | string | `--ai-sandbox` | `read-only` | Sandbox mode: `read-only`, `workspace-write`, or `danger-full-access` |
 | `max_files` | int | `--max-files` | `20000` | Max file count in staged workspace |
 | `max_bytes` | int | `--max-bytes` | `262144000` (~250MB) | Max total bytes in staged workspace |
-| `timeout` | string | `--timeout` | `4m` | Per-check worker timeout (Go duration format) |
+| `timeout` | string | `--timeout` | `4m` | Per-check worker timeout (Go duration format, use `0` to disable) |
 | `verbose` | bool | `--verbose` | `false` | Enable verbose execution logs |
 | `checks_dir` | string | `--checks-dir` | auto | Custom checks directory override |
 | `no_custom_checks` | bool | `--no-custom-checks` | `false` | Ignore all custom checks |

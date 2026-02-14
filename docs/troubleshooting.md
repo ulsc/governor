@@ -49,6 +49,9 @@ governor audit ./my-app --timeout 8m
 
 # Reduce concurrency so each worker gets more resources
 governor audit ./my-app --workers 1 --timeout 8m
+
+# Disable per-check timeout entirely (run can take much longer)
+governor audit ./my-app --timeout 0
 ```
 
 ### Rate limits (HTTP 429)

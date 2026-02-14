@@ -238,6 +238,46 @@ func TestValidateOptions_AllowsEmptyOutDir(t *testing.T) {
 	}
 }
 
+func TestValidateOptions_AllowsZeroTimeout(t *testing.T) {
+	opts := normalizeOptions(AuditOptions{
+		InputPath: "/tmp/input",
+		Workers:   1,
+		MaxFiles:  1,
+		MaxBytes:  1,
+		Timeout:   0,
+	})
+	if err := validateOptions(opts); err != nil {
+		t.Fatalf("validate options with zero timeout failed: %v", err)
+	}
+}
+
+func TestNormalizeOptions_PreservesZeroTimeout(t *testing.T) {
+	opts := normalizeOptions(AuditOptions{
+		InputPath: "/tmp/input",
+		Timeout:   0,
+	})
+	if opts.Timeout != 0 {
+		t.Fatalf("expected zero timeout to be preserved, got %s", opts.Timeout)
+	}
+}
+
+func TestValidateOptions_RejectsNegativeTimeout(t *testing.T) {
+	opts := normalizeOptions(AuditOptions{
+		InputPath: "/tmp/input",
+		Workers:   1,
+		MaxFiles:  1,
+		MaxBytes:  1,
+		Timeout:   -1 * time.Second,
+	})
+	err := validateOptions(opts)
+	if err == nil {
+		t.Fatal("expected error for negative timeout")
+	}
+	if !strings.Contains(err.Error(), "--timeout must be >= 0") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestNormalizeOptions_HardenedDefaults(t *testing.T) {
 	opts := normalizeOptions(AuditOptions{
 		InputPath: "/tmp/input",

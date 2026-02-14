@@ -361,7 +361,7 @@ cat ./audit-output/audit.md
 | `--workers` | `3` | Max concurrent workers (1-3) |
 | `--max-files` | `20000` | Included file count cap |
 | `--max-bytes` | `250 MB` | Included file bytes cap |
-| `--timeout` | `4m` | Per-worker timeout |
+| `--timeout` | `4m` | Per-worker timeout (`0` disables timeout) |
 | `--out` | `.governor/runs/<timestamp>` | Output directory |
 | `--checks-dir` | (none) | Custom checks directory to mount |
 | `--only-check` | (none) | Run only specified check IDs (repeatable) |
