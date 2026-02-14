@@ -682,13 +682,4 @@ Governor is provided on an "as is" and "as available" basis.
 
 ## Contributing
 
-Contributions are welcome.
-
-Local development:
-
-```bash
-make test
-make build
-```
-
-When changing behavior, update this README in the same PR so users always have accurate docs.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
