@@ -1045,6 +1045,10 @@ func runCheckCreateFlow(input checkCreateInput) (string, checks.Status, error) {
 	if !ok {
 		return "", "", fmt.Errorf("unknown template %q (available: %s)", input.TemplateID, strings.Join(checks.TemplateIDs(), ", "))
 	}
+	templateEngine := template.Engine
+	if templateEngine == "" {
+		templateEngine = checks.EngineAI
+	}
 
 	if input.Interactive {
 		id, err := promptInput(reader, "Check ID (slug)", input.ID)
@@ -1073,15 +1077,17 @@ func runCheckCreateFlow(input checkCreateInput) (string, checks.Status, error) {
 		}
 		input.Description = strings.TrimSpace(description)
 
-		defaultInstructions := input.Instructions
-		if defaultInstructions == "" {
-			defaultInstructions = template.Instructions
+		if templateEngine == checks.EngineAI {
+			defaultInstructions := input.Instructions
+			if defaultInstructions == "" {
+				defaultInstructions = template.Instructions
+			}
+			instructions, err := promptInput(reader, "Instructions", defaultInstructions)
+			if err != nil {
+				return "", "", err
+			}
+			input.Instructions = strings.TrimSpace(instructions)
 		}
-		instructions, err := promptInput(reader, "Instructions", defaultInstructions)
-		if err != nil {
-			return "", "", err
-		}
-		input.Instructions = strings.TrimSpace(instructions)
 	}
 
 	status, err := checks.ParseStatus(input.StatusRaw)
@@ -1108,8 +1114,8 @@ func runCheckCreateFlow(input checkCreateInput) (string, checks.Status, error) {
 	if instructions == "" {
 		instructions = strings.TrimSpace(template.Instructions)
 	}
-	if instructions == "" {
-		return "", "", errors.New("instructions are required")
+	if templateEngine == checks.EngineAI && instructions == "" {
+		return "", "", errors.New("instructions are required for ai checks")
 	}
 
 	categories := input.CategoriesHint
@@ -1145,8 +1151,10 @@ func runCheckCreateFlow(input checkCreateInput) (string, checks.Status, error) {
 		Name:           name,
 		Status:         status,
 		Source:         checks.SourceCustom,
+		Engine:         templateEngine,
 		Description:    description,
 		Instructions:   instructions,
+		Rule:           template.Rule,
 		CategoriesHint: categories,
 		SeverityHint:   severityHint,
 		ConfidenceHint: confidenceHint,

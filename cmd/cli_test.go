@@ -211,6 +211,45 @@ func TestRunChecksInit_NonInteractiveCreatesTemplateCheck(t *testing.T) {
 	}
 }
 
+func TestRunChecksInit_NonInteractiveCreatesRuleTemplateCheck(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+
+	restoreWD := setWorkingDir(t, repoRoot)
+	defer restoreWD()
+
+	_ = captureStdout(t, func() {
+		err := runChecksInit([]string{
+			"--non-interactive",
+			"--template", "prompt-injection-rule",
+			"--id", "prompt-rule-test",
+			"--name", "Prompt Rule Test",
+			"--status", "enabled",
+		})
+		if err != nil {
+			t.Fatalf("runChecksInit failed: %v", err)
+		}
+	})
+
+	path := filepath.Join(repoRoot, ".governor", "checks", "prompt-rule-test.check.yaml")
+	def, err := checks.ReadDefinition(path)
+	if err != nil {
+		t.Fatalf("read created check: %v", err)
+	}
+	if def.Engine != checks.EngineRule {
+		t.Fatalf("expected rule engine, got %s", def.Engine)
+	}
+	if def.Rule.Target != checks.RuleTargetFileContent {
+		t.Fatalf("unexpected rule target: %s", def.Rule.Target)
+	}
+	if len(def.Rule.Detectors) == 0 {
+		t.Fatal("expected detectors for rule template")
+	}
+}
+
 func TestRunChecksStatus_DefaultPrefersRepoCheck(t *testing.T) {
 	repoRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o700); err != nil {

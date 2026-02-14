@@ -44,3 +44,19 @@ func TestParseStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestLookupTemplate_PromptInjectionRuleExists(t *testing.T) {
+	template, ok := LookupTemplate("prompt-injection-rule")
+	if !ok {
+		t.Fatal("expected prompt-injection-rule template to exist")
+	}
+	if template.Engine != EngineRule {
+		t.Fatalf("expected rule engine template, got %s", template.Engine)
+	}
+	if template.Rule.Target != RuleTargetFileContent {
+		t.Fatalf("unexpected rule target: %s", template.Rule.Target)
+	}
+	if len(template.Rule.Detectors) == 0 {
+		t.Fatal("expected prompt-injection-rule detectors")
+	}
+}

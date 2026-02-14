@@ -28,4 +28,3 @@ func TestContainsMatches_CaseInsensitive(t *testing.T) {
 		t.Fatalf("expected one case-insensitive match, got %d", len(matches))
 	}
 }
-
