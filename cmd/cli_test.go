@@ -91,7 +91,7 @@ func TestResolveIsolateOutDir_ExplicitPath(t *testing.T) {
 	}
 }
 
-func TestPrintIsolateAuditSummaryFromHost_UsesHostPaths(t *testing.T) {
+func TestLoadIsolateAuditReport_UsesHostPaths(t *testing.T) {
 	outDir := t.TempDir()
 	report := model.AuditReport{
 		RunMetadata: model.RunMetadata{
@@ -116,10 +116,13 @@ func TestPrintIsolateAuditSummaryFromHost_UsesHostPaths(t *testing.T) {
 		t.Fatalf("write report: %v", err)
 	}
 
+	loaded, loadErr := loadIsolateAuditReport(outDir)
+	if loadErr != nil {
+		t.Fatalf("load isolate report: %v", loadErr)
+	}
+
 	out := captureStdout(t, func() {
-		if err := printIsolateAuditSummaryFromHost(outDir); err != nil {
-			t.Fatalf("print isolate summary: %v", err)
-		}
+		printAuditSummary(loaded, isolateArtifactPaths(outDir))
 	})
 
 	if !strings.Contains(out, "artifacts dir:  "+outDir) {
@@ -409,6 +412,46 @@ func TestRunChecksExplain_PrintsEffectivePath(t *testing.T) {
 	_ = repoPath
 	if !strings.Contains(out, "effective path:") || !strings.Contains(out, filepath.Join(".governor", "checks", "explain-check.check.yaml")) {
 		t.Fatalf("expected effective repo path in output, got:\n%s", out)
+	}
+}
+
+func TestCheckFailOn(t *testing.T) {
+	findings := []model.Finding{
+		{Title: "A", Severity: "high"},
+		{Title: "B", Severity: "low"},
+	}
+	report := model.AuditReport{Findings: findings}
+
+	tests := []struct {
+		name      string
+		threshold string
+		wantErr   bool
+	}{
+		{"empty threshold passes", "", false},
+		{"critical passes when only high/low", "critical", false},
+		{"high fails when high finding exists", "high", true},
+		{"medium fails when high finding exists", "medium", true},
+		{"low fails when low finding exists", "low", true},
+		{"info fails when any finding exists", "info", true},
+		{"invalid threshold errors", "bogus", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkFailOn(tt.threshold, report)
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected error for threshold %q", tt.threshold)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error for threshold %q: %v", tt.threshold, err)
+			}
+		})
+	}
+}
+
+func TestCheckFailOn_NoFindings(t *testing.T) {
+	report := model.AuditReport{}
+	if err := checkFailOn("critical", report); err != nil {
+		t.Fatalf("expected no error with zero findings: %v", err)
 	}
 }
 

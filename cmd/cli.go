@@ -51,6 +51,7 @@ func runAudit(args []string) error {
 	fs.SetOutput(flag.CommandLine.Output())
 
 	out := fs.String("out", "", "Output directory for run artifacts (default ./.governor/runs/<timestamp>)")
+	failOn := fs.String("fail-on", "", "Exit non-zero if any finding meets or exceeds severity: critical|high|medium|low|info")
 	workers := fs.Int("workers", 3, "Max concurrent worker processes (1-3)")
 	aiProfile := fs.String("ai-profile", "codex", "AI profile name (default codex)")
 	aiProvider := fs.String("ai-provider", "", "AI provider override: codex-cli|openai-compatible")
@@ -233,7 +234,7 @@ func runAudit(args []string) error {
 			return result.err
 		}
 		printAuditSummary(result.report, result.paths)
-		return nil
+		return checkFailOn(*failOn, result.report)
 	}
 
 	auditOpts.Progress = progress.NewPlainSink(os.Stderr)
@@ -243,7 +244,7 @@ func runAudit(args []string) error {
 	}
 	printAuditSummary(report, paths)
 
-	return nil
+	return checkFailOn(*failOn, report)
 }
 
 func runIsolate(args []string) error {
@@ -263,6 +264,7 @@ func runIsolateAudit(args []string) error {
 	fs.SetOutput(flag.CommandLine.Output())
 
 	out := fs.String("out", "", "Output directory for run artifacts (default ./.governor/runs/<timestamp>)")
+	failOn := fs.String("fail-on", "", "Exit non-zero if any finding meets or exceeds severity: critical|high|medium|low|info")
 	runtimeName := fs.String("runtime", "auto", "Container runtime: auto|docker|podman")
 	image := fs.String("image", isolation.DefaultImage, "Container image for isolated governor runner")
 	network := fs.String("network", "none", "Network policy: unrestricted|none")
@@ -401,11 +403,14 @@ func runIsolateAudit(args []string) error {
 	}); err != nil {
 		return err
 	}
-	if err := printIsolateAuditSummaryFromHost(outDir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	report, reportErr := loadIsolateAuditReport(outDir)
+	if reportErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", reportErr)
 		printIsolateArtifactPaths(outDir)
+		return nil
 	}
-	return nil
+	printAuditSummary(report, isolateArtifactPaths(outDir))
+	return checkFailOn(*failOn, report)
 }
 
 func printAuditSummary(report model.AuditReport, paths app.ArtifactPaths) {
@@ -501,18 +506,61 @@ func printIsolateArtifactPaths(outDir string) {
 	fmt.Printf("audit html:     %s\n", filepath.Clean(paths.HTMLPath))
 }
 
-func printIsolateAuditSummaryFromHost(outDir string) error {
+func loadIsolateAuditReport(outDir string) (model.AuditReport, error) {
 	paths := isolateArtifactPaths(outDir)
 	raw, err := os.ReadFile(paths.JSONPath)
 	if err != nil {
-		return fmt.Errorf("read isolated report %s: %w", paths.JSONPath, err)
+		return model.AuditReport{}, fmt.Errorf("read isolated report %s: %w", paths.JSONPath, err)
 	}
 	var report model.AuditReport
 	if err := json.Unmarshal(raw, &report); err != nil {
-		return fmt.Errorf("parse isolated report %s: %w", paths.JSONPath, err)
+		return model.AuditReport{}, fmt.Errorf("parse isolated report %s: %w", paths.JSONPath, err)
 	}
-	printAuditSummary(report, paths)
+	return report, nil
+}
+
+func checkFailOn(threshold string, report model.AuditReport) error {
+	threshold = strings.ToLower(strings.TrimSpace(threshold))
+	if threshold == "" {
+		return nil
+	}
+	thresholdWeight, ok := severityWeightMap[threshold]
+	if !ok {
+		return fmt.Errorf("invalid --fail-on severity %q (expected critical, high, medium, low, or info)", threshold)
+	}
+	for _, f := range report.Findings {
+		w, exists := severityWeightMap[strings.ToLower(strings.TrimSpace(f.Severity))]
+		if !exists {
+			w = severityWeightMap["info"]
+		}
+		if w <= thresholdWeight {
+			return fmt.Errorf("findings exceed --fail-on threshold %q (%d finding(s) at or above %s severity)",
+				threshold, countAtOrAbove(report.Findings, thresholdWeight), threshold)
+		}
+	}
 	return nil
+}
+
+var severityWeightMap = map[string]int{
+	"critical": 0,
+	"high":     1,
+	"medium":   2,
+	"low":      3,
+	"info":     4,
+}
+
+func countAtOrAbove(findings []model.Finding, thresholdWeight int) int {
+	n := 0
+	for _, f := range findings {
+		w, ok := severityWeightMap[strings.ToLower(strings.TrimSpace(f.Severity))]
+		if !ok {
+			w = severityWeightMap["info"]
+		}
+		if w <= thresholdWeight {
+			n++
+		}
+	}
+	return n
 }
 
 func runChecks(args []string) error {
@@ -1427,6 +1475,7 @@ func printUsage() {
 	fmt.Println("  --no-custom-checks  Disable custom check loading")
 	fmt.Println("  --keep-workspace-error  Retain staged workspace on warning/failed runs (default deletes)")
 	fmt.Println("  --tui               Enable interactive terminal UI")
+	fmt.Println("  --fail-on <sev>     Exit non-zero if findings meet/exceed severity (critical|high|medium|low|info)")
 	fmt.Println("  --no-tui            Disable interactive terminal UI")
 	fmt.Println("")
 	fmt.Println("Flags (isolate audit):")
@@ -1453,6 +1502,7 @@ func printUsage() {
 	fmt.Println("  --skip-check <id>   Skip specified check ID (repeatable)")
 	fmt.Println("  --no-custom-checks  Disable custom check loading")
 	fmt.Println("  --keep-workspace-error  Retain staged workspace on warning/failed runs (default deletes)")
+	fmt.Println("  --fail-on <sev>     Exit non-zero if findings meet/exceed severity (critical|high|medium|low|info)")
 }
 
 type listFlag struct {
