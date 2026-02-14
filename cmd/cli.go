@@ -132,7 +132,7 @@ func runAudit(args []string) error {
 	if err != nil {
 		return err
 	}
-	codexRequired := checks.SelectionRequiresCodex(selection.Checks)
+	codexRequired := checks.SelectionRequiresAI(selection.Checks)
 
 	codexInfo := trust.CodexBinary{}
 	if codexRequired {

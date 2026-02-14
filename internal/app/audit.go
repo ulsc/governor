@@ -181,7 +181,7 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 	}
 	builtinCount, customCount := checks.CountChecksBySource(selection.Checks)
 	aiCount, ruleCount := checks.CountChecksByEngine(selection.Checks)
-	codexRequired := checks.SelectionRequiresCodex(selection.Checks)
+	codexRequired := checks.SelectionRequiresAI(selection.Checks)
 
 	workerResults := worker.RunAll(ctx, stage.WorkspacePath, stage.Manifest, selection.Checks, worker.RunOptions{
 		CodexBin:    opts.CodexBin,

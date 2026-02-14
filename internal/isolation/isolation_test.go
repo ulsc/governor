@@ -356,13 +356,13 @@ func TestRunPreflight_DeterministicSelectionSkipsCodexProbe(t *testing.T) {
 	}
 }
 
-func TestIsolateSelectionRequiresCodex_OnlyPromptInjectionBuiltin(t *testing.T) {
-	required, warnings, err := isolateSelectionRequiresCodex(AuditOptions{
+func TestIsolateSelectionRequiresAI_OnlyPromptInjectionBuiltin(t *testing.T) {
+	required, warnings, err := isolateSelectionRequiresAI(AuditOptions{
 		NoCustomChecks: true,
 		OnlyChecks:     []string{"prompt_injection"},
 	})
 	if err != nil {
-		t.Fatalf("isolateSelectionRequiresCodex failed: %v", err)
+		t.Fatalf("isolateSelectionRequiresAI failed: %v", err)
 	}
 	if required {
 		t.Fatal("expected prompt_injection-only selection to not require codex")

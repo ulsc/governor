@@ -33,8 +33,8 @@ func TestCountChecksByEngine(t *testing.T) {
 	}
 }
 
-func TestSelectionRequiresCodex(t *testing.T) {
-	if SelectionRequiresCodex([]Definition{
+func TestSelectionRequiresAI(t *testing.T) {
+	if SelectionRequiresAI([]Definition{
 		{
 			APIVersion: APIVersion,
 			ID:         "rule-only",
@@ -52,7 +52,7 @@ func TestSelectionRequiresCodex(t *testing.T) {
 		t.Fatal("expected rule-only selection to not require codex")
 	}
 
-	if !SelectionRequiresCodex([]Definition{
+	if !SelectionRequiresAI([]Definition{
 		{
 			APIVersion:   APIVersion,
 			ID:           "ai-check",

@@ -66,7 +66,7 @@ func CountChecksByEngine(defs []Definition) (aiCount int, ruleCount int) {
 	return
 }
 
-func SelectionRequiresCodex(defs []Definition) bool {
+func SelectionRequiresAI(defs []Definition) bool {
 	for _, def := range defs {
 		if NormalizeDefinition(def).Engine == EngineAI {
 			return true

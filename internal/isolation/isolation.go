@@ -150,7 +150,7 @@ func RunAudit(ctx context.Context, opts AuditOptions) error {
 	}()
 
 	hostEnv := envToMap(os.Environ())
-	codexRequired, selectionWarnings, err := isolateSelectionRequiresCodex(opts)
+	codexRequired, selectionWarnings, err := isolateSelectionRequiresAI(opts)
 	if err != nil {
 		return err
 	}
@@ -1198,7 +1198,7 @@ func normalizeSandboxMode(raw string) string {
 	}
 }
 
-func isolateSelectionRequiresCodex(opts AuditOptions) (bool, []string, error) {
+func isolateSelectionRequiresAI(opts AuditOptions) (bool, []string, error) {
 	builtinDefs := checks.Builtins()
 	customDefs := []checks.Definition{}
 	warnings := make([]string, 0, 4)
@@ -1226,5 +1226,5 @@ func isolateSelectionRequiresCodex(opts AuditOptions) (bool, []string, error) {
 		return false, nil, err
 	}
 	warnings = append(warnings, selection.Warnings...)
-	return checks.SelectionRequiresCodex(selection.Checks), warnings, nil
+	return checks.SelectionRequiresAI(selection.Checks), warnings, nil
 }
