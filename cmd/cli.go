@@ -52,6 +52,7 @@ func runAudit(args []string) error {
 
 	out := fs.String("out", "", "Output directory for run artifacts (default ./.governor/runs/<timestamp>)")
 	failOn := fs.String("fail-on", "", "Exit non-zero if any finding meets or exceeds severity: critical|high|medium|low|info")
+	baseline := fs.String("baseline", "", "Path to a previous audit.json for diff comparison")
 	workers := fs.Int("workers", 3, "Max concurrent worker processes (1-3)")
 	aiProfile := fs.String("ai-profile", "codex", "AI profile name (default codex)")
 	aiProvider := fs.String("ai-provider", "", "AI provider override: codex-cli|openai-compatible")
@@ -208,6 +209,8 @@ func runAudit(args []string) error {
 		AllowExistingOutDir:  *allowExistingOutDir,
 
 		SandboxDenyHostFallback: *sandboxDenyHostFallback,
+
+		BaselinePath: strings.TrimSpace(*baseline),
 	}
 
 	if useTUI {
@@ -421,6 +424,9 @@ func printAuditSummary(report model.AuditReport, paths app.ArtifactPaths) {
 	fmt.Printf("audit html:     %s\n", filepath.Clean(paths.HTMLPath))
 	if paths.SARIFPath != "" {
 		fmt.Printf("audit sarif:    %s\n", filepath.Clean(paths.SARIFPath))
+	}
+	if paths.DiffPath != "" {
+		fmt.Printf("audit diff:     %s\n", filepath.Clean(paths.DiffPath))
 	}
 	if strings.TrimSpace(report.RunMetadata.AIProfile) != "" {
 		fmt.Printf("ai profile:     %s\n", report.RunMetadata.AIProfile)
@@ -1481,6 +1487,7 @@ func printUsage() {
 	fmt.Println("  --keep-workspace-error  Retain staged workspace on warning/failed runs (default deletes)")
 	fmt.Println("  --tui               Enable interactive terminal UI")
 	fmt.Println("  --fail-on <sev>     Exit non-zero if findings meet/exceed severity (critical|high|medium|low|info)")
+	fmt.Println("  --baseline <path>   Compare against a previous audit.json for diff report")
 	fmt.Println("  --no-tui            Disable interactive terminal UI")
 	fmt.Println("")
 	fmt.Println("Flags (isolate audit):")

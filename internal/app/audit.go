@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"governor/internal/ai"
 	"governor/internal/checks"
+	"governor/internal/diff"
 	"governor/internal/intake"
 	"governor/internal/model"
 	"governor/internal/progress"
@@ -46,6 +48,8 @@ type AuditOptions struct {
 	AllowExistingOutDir  bool
 
 	SandboxDenyHostFallback bool
+
+	BaselinePath string
 }
 
 type ArtifactPaths struct {
@@ -55,6 +59,7 @@ type ArtifactPaths struct {
 	MarkdownPath string
 	HTMLPath     string
 	SARIFPath    string
+	DiffPath     string
 }
 
 func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport, paths ArtifactPaths, err error) {
@@ -298,7 +303,38 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 		HTMLPath:     htmlPath,
 		SARIFPath:    sarifPath,
 	}
+
+	if strings.TrimSpace(opts.BaselinePath) != "" {
+		diffPath, diffErr := writeBaselineDiff(opts.BaselinePath, report, runDir)
+		if diffErr != nil {
+			runWarnings = append(runWarnings, fmt.Sprintf("baseline diff: %v", diffErr))
+		} else {
+			paths.DiffPath = diffPath
+		}
+	}
+
 	return
+}
+
+func writeBaselineDiff(baselinePath string, current model.AuditReport, runDir string) (string, error) {
+	raw, readErr := os.ReadFile(baselinePath)
+	if readErr != nil {
+		return "", fmt.Errorf("read baseline %s: %w", baselinePath, readErr)
+	}
+	var baseline model.AuditReport
+	if jsonErr := json.Unmarshal(raw, &baseline); jsonErr != nil {
+		return "", fmt.Errorf("parse baseline %s: %w", baselinePath, jsonErr)
+	}
+	dr := diff.Compare(baseline, current)
+	diffPath := filepath.Join(runDir, "audit-diff.json")
+	b, marshalErr := json.MarshalIndent(dr, "", "  ")
+	if marshalErr != nil {
+		return "", fmt.Errorf("marshal diff report: %w", marshalErr)
+	}
+	if writeErr := safefile.WriteFileAtomic(diffPath, b, 0o600); writeErr != nil {
+		return "", fmt.Errorf("write diff report: %w", writeErr)
+	}
+	return diffPath, nil
 }
 
 func resolveRunDir(out string, runID string) (string, error) {
