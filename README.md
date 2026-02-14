@@ -4,6 +4,8 @@
 
 <h1 align="center">Governor</h1>
 
+<p align="center"><em>Let's make vibe coding safe.</em></p>
+
 <p align="center">
   <a href="https://github.com/OWNER/REPO/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/OWNER/REPO/ci.yml?branch=main&style=for-the-badge&label=build%20%26%20test" alt="Build & Test"></a>
   <a href="https://github.com/OWNER/REPO/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/OWNER/REPO/release.yml?style=for-the-badge&label=release%20artifacts" alt="Release Artifacts"></a>
