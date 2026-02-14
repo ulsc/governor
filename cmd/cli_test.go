@@ -133,6 +133,23 @@ func TestLoadIsolateAuditReport_UsesHostPaths(t *testing.T) {
 	}
 }
 
+func TestRunIsolateAudit_RejectsNegativeTimeout(t *testing.T) {
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	inputDir := t.TempDir()
+
+	err := runIsolateAudit([]string{
+		inputDir,
+		"--out", filepath.Join(t.TempDir(), "out"),
+		"--timeout", "-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative timeout")
+	}
+	if !strings.Contains(err.Error(), "--timeout must be >= 0") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRunInit_CreatesDirectoryStructure(t *testing.T) {
 	repoRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o700); err != nil {

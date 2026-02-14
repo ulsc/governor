@@ -1,6 +1,9 @@
 package checks
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBuildSelection_DefaultIncludesBuiltinsAndEnabledCustom(t *testing.T) {
 	custom := []Definition{
@@ -56,5 +59,55 @@ func TestBuildSelection_OnlyAndSkipApplied(t *testing.T) {
 	}
 	if res.Checks[0].ID != "foo" {
 		t.Fatalf("expected foo, got %s", res.Checks[0].ID)
+	}
+}
+
+func TestBuildSelection_DuplicateIDWarnsAndKeepsFirstDefinition(t *testing.T) {
+	builtins := []Definition{
+		{
+			APIVersion:   APIVersion,
+			ID:           "dup-check",
+			Name:         "Builtin Dup",
+			Status:       StatusEnabled,
+			Source:       SourceBuiltin,
+			Instructions: "builtin instructions",
+		},
+	}
+	custom := []Definition{
+		{
+			APIVersion:   APIVersion,
+			ID:           "dup-check",
+			Name:         "Custom Dup",
+			Status:       StatusEnabled,
+			Source:       SourceCustom,
+			Instructions: "custom instructions",
+		},
+	}
+
+	res, err := BuildSelection(builtins, custom, SelectionOptions{
+		IncludeBuiltins: true,
+		IncludeCustom:   true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Checks) != 1 {
+		t.Fatalf("expected one selected check, got %d", len(res.Checks))
+	}
+	selected := res.Checks[0]
+	if selected.ID != "dup-check" {
+		t.Fatalf("expected dup-check id, got %q", selected.ID)
+	}
+	if selected.Source != SourceBuiltin {
+		t.Fatalf("expected builtin to win on duplicate id, got source %q", selected.Source)
+	}
+	if selected.Instructions != "builtin instructions" {
+		t.Fatalf("expected builtin definition to be preserved, got %q", selected.Instructions)
+	}
+	if len(res.Warnings) == 0 {
+		t.Fatal("expected duplicate warning")
+	}
+	if !strings.Contains(res.Warnings[0], `duplicate check id "dup-check"`) {
+		t.Fatalf("unexpected warning: %v", res.Warnings)
 	}
 }
