@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"governor/internal/envsafe"
@@ -74,7 +73,7 @@ func buildCodexExecArgs(runtime Runtime, input ExecutionInput) []string {
 func executeCodexCLI(ctx context.Context, runtime Runtime, input ExecutionInput) ([]byte, error) {
 	args := buildCodexExecArgs(runtime, input)
 	cmd := exec.CommandContext(ctx, runtime.Bin, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = sysProcAttr()
 	cmd.Stdin = strings.NewReader(input.PromptText)
 	cmd.Env = envsafe.AIEnv(input.Env)
 	cmdDone := make(chan struct{})
@@ -445,14 +444,3 @@ func joinURLPath(base string, suffix string) (string, error) {
 	return u.String(), nil
 }
 
-func killCommandProcessGroup(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	pid := cmd.Process.Pid
-	if pid <= 0 {
-		return
-	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	_ = cmd.Process.Kill()
-}
