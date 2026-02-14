@@ -1,61 +1,42 @@
 # Security Policy
 
-## Reporting a Vulnerability
+Governor is an open source project. Security reports are handled on a best-effort
+basis by maintainers.
 
-If you discover a security vulnerability in Governor, please report it responsibly.
+## Reporting Vulnerabilities
 
-Please open a GitHub issue:
+Open a GitHub issue:
 **https://github.com/ulsc/governor/issues/new**
 
-Use a title prefix of **[SECURITY]** and include:
+Use the title prefix **[SECURITY]** and include:
 
-- A clear description of the vulnerability
+- A clear description of the issue
 - Reproduction steps
 - Affected versions or commit SHAs
-- Potential impact assessment
+- Potential impact
 
-## Response Timeline
-
-- **Acknowledgment**: Within 48 hours of receipt
-- **Initial assessment**: Within 5 business days
-- **Fix or mitigation**: Depends on severity, but we aim for:
-  - Critical: 7 days
-  - High: 14 days
-  - Medium/Low: Next scheduled release
-
-## Scope
-
-The following are in scope:
-
-- Governor CLI (`governor` binary)
-- Built-in check definitions
-- Install script (`install.sh`)
-- GitHub Action (`ulsc/governor-action`)
-- Container image (`Dockerfile.isolate-runner`)
-
-The following are out of scope:
-
-- Third-party AI providers and their APIs
-- User-authored custom checks
-- Vulnerabilities in dependencies (report these upstream, but let us know)
+Do not include active credentials, secrets, or other sensitive data in the issue.
 
 ## Supported Versions
 
-Security fixes are applied to the latest release only. We recommend always running the latest version.
+Security fixes are applied to the latest release on `main`.
 
-## Disclosure Policy
+## Project Scope
 
-- We follow coordinated disclosure. We will work with you to understand and address the issue before any public disclosure.
-- Credit will be given to reporters in release notes unless anonymity is requested.
+Security issues are accepted for this project and its maintained artifacts,
+including:
 
-## Security Design
+- Governor CLI (`governor`)
+- Built-in checks bundled in this repository
+- Install script (`install.sh`)
+- Isolation runner image (`Dockerfile.isolate-runner`)
 
-Governor is built with security in mind:
+## Security Hardening Notes
 
-- ZIP extraction blocks path traversal and absolute paths
-- Symlinks are skipped during intake
-- Worker subprocesses run with a constrained environment allowlist
-- AI binaries are resolved and attested before execution
-- Report text is redacted for common secret patterns before persistence
-- Run directories and artifacts use restrictive file permissions (0700/0600)
-- Container-isolated runs use read-only root filesystems and non-root users
+Governor includes several defensive controls, including:
+
+- ZIP extraction protections against traversal/absolute paths
+- Symlink skipping during intake
+- Constrained environment allowlist for worker subprocesses
+- Secret-pattern redaction before report persistence
+- Restrictive permissions for run directories and artifacts

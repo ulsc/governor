@@ -51,8 +51,8 @@ If you experience or witness unacceptable behavior, open a GitHub issue:
 
 Use a title prefix of **[CODE_OF_CONDUCT]** and include relevant context.
 
-All reports will be reviewed promptly and handled confidentially to the extent
-possible.
+Reports are reviewed by maintainers and handled through the project issue
+workflow.
 
 ## Enforcement Guidelines
 
