@@ -127,6 +127,10 @@ func Builtins() []Definition {
 				ExcludeGlobs: []string{
 					"**/node_modules/**",
 					"**/vendor/**",
+					// Exclude check-definition and documentation files that
+					// contain detector patterns as examples / string literals.
+					"**/checks/builtin.go", "**/checks/templates.go",
+					"**/docs/checks/**", "**/README.md",
 				},
 			},
 			CategoriesHint: []string{"prompt_injection", "input_validation"},
@@ -222,6 +226,7 @@ func Builtins() []Definition {
 				ExcludeGlobs: []string{
 					"**/node_modules/**", "**/vendor/**",
 					"**/*.lock", "**/go.sum",
+					"**/checks/builtin.go", // contains detector pattern strings
 				},
 			},
 			CategoriesHint: []string{"secrets", "credentials"},
@@ -474,6 +479,7 @@ func Builtins() []Definition {
 				},
 				ExcludeGlobs: []string{
 					"**/node_modules/**", "**/vendor/**",
+					"**/checks/builtin.go", // contains detector pattern strings
 				},
 			},
 			CategoriesHint: []string{"crypto", "configuration"},
