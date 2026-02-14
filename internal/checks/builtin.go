@@ -136,5 +136,429 @@ func Builtins() []Definition {
 				Method: "builtin",
 			},
 		},
+
+		// ── Rule-engine checks ──────────────────────────────────────────
+
+		{
+			APIVersion:  APIVersion,
+			ID:          "hardcoded_credentials",
+			Name:        "Hardcoded Credentials",
+			Status:      StatusEnabled,
+			Source:      SourceBuiltin,
+			Engine:      EngineRule,
+			Description: "Detects hardcoded passwords, API keys, tokens, and secrets embedded directly in source code.",
+			Rule: Rule{
+				Target: RuleTargetFileContent,
+				Detectors: []RuleDetector{
+					{
+						ID:            "password-assignment",
+						Kind:          RuleDetectorRegex,
+						Pattern:       `(?i)(password|passwd|pwd)\s*[:=]\s*["'][\S]{8,}["']`,
+						CaseSensitive: false,
+						Title:         "Hardcoded password detected",
+						Category:      "secrets",
+						Severity:      "critical",
+						Confidence:    0.8,
+						Remediation:   "Move credentials to environment variables or a secrets manager. Never commit passwords to source control.",
+						MaxMatches:    10,
+					},
+					{
+						ID:            "api-key-assignment",
+						Kind:          RuleDetectorRegex,
+						Pattern:       `(?i)(api_key|apikey|api_secret|api_token)\s*[:=]\s*["'][\w\-/+=]{16,}["']`,
+						CaseSensitive: false,
+						Title:         "Hardcoded API key or token detected",
+						Category:      "secrets",
+						Severity:      "critical",
+						Confidence:    0.8,
+						Remediation:   "Use environment variables or a secrets vault to store API keys. Rotate any exposed keys immediately.",
+						MaxMatches:    10,
+					},
+					{
+						ID:            "bearer-token-literal",
+						Kind:          RuleDetectorRegex,
+						Pattern:       `(?i)["']Bearer\s+[A-Za-z0-9\-._~+/]+=*["']`,
+						CaseSensitive: false,
+						Title:         "Hardcoded Bearer token detected",
+						Category:      "secrets",
+						Severity:      "high",
+						Confidence:    0.85,
+						Remediation:   "Replace static Bearer tokens with runtime token retrieval from a secure credential store.",
+						MaxMatches:    10,
+					},
+					{
+						ID:            "private-key-header",
+						Kind:          RuleDetectorContains,
+						Pattern:       "-----BEGIN RSA PRIVATE KEY-----",
+						CaseSensitive: true,
+						Title:         "Embedded RSA private key detected",
+						Category:      "secrets",
+						Severity:      "critical",
+						Confidence:    0.95,
+						Remediation:   "Remove private keys from source code. Store them in a secure key management system and load at runtime.",
+						MaxMatches:    3,
+					},
+					{
+						ID:            "generic-secret-assignment",
+						Kind:          RuleDetectorRegex,
+						Pattern:       `(?i)(secret|token|auth_key|access_key|private_key)\s*[:=]\s*["'][A-Za-z0-9\-._~+/]{20,}["']`,
+						CaseSensitive: false,
+						Title:         "Hardcoded secret or access key detected",
+						Category:      "secrets",
+						Severity:      "high",
+						Confidence:    0.7,
+						Remediation:   "Externalize secrets using environment variables, a .env file excluded from version control, or a secrets manager.",
+						MaxMatches:    10,
+					},
+				},
+			},
+			Scope: Scope{
+				IncludeGlobs: []string{
+					"**/*.go", "**/*.py", "**/*.js", "**/*.ts", "**/*.jsx", "**/*.tsx",
+					"**/*.java", "**/*.rb", "**/*.php", "**/*.rs", "**/*.cs",
+					"**/*.yaml", "**/*.yml", "**/*.json", "**/*.toml", "**/*.env",
+					"**/*.cfg", "**/*.conf", "**/*.ini", "**/*.properties",
+				},
+				ExcludeGlobs: []string{
+					"**/node_modules/**", "**/vendor/**", "**/*_test.go",
+					"**/test/**", "**/*.test.*", "**/fixtures/**",
+					"**/*.lock", "**/go.sum",
+				},
+			},
+			CategoriesHint: []string{"secrets", "credentials"},
+			SeverityHint:   "critical",
+			ConfidenceHint: 0.8,
+			Origin: Origin{
+				Method: "builtin",
+			},
+		},
+		{
+			APIVersion:  APIVersion,
+			ID:          "command_injection",
+			Name:        "Command Injection Patterns",
+			Status:      StatusEnabled,
+			Source:      SourceBuiltin,
+			Engine:      EngineRule,
+			Description: "Detects patterns where user-controlled input may be interpolated into OS commands, enabling command injection.",
+			Rule: Rule{
+				Target: RuleTargetFileContent,
+				Detectors: []RuleDetector{
+					{
+						ID:          "exec-string-concat-js",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?:child_process|exec|execSync|spawn|spawnSync)\s*\(\s*(?:` + "`" + `[^` + "`" + `]*\$\{|['"][^'"]*['"]\s*\+)`,
+						Title:       "Potential command injection via string interpolation (JavaScript/TypeScript)",
+						Category:    "rce",
+						Severity:    "critical",
+						Confidence:  0.75,
+						Remediation: "Use parameterized APIs like spawn() with argument arrays instead of shell string interpolation. Validate and sanitize all user input before passing to command execution functions.",
+						MaxMatches:  10,
+					},
+					{
+						ID:          "exec-string-concat-py",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?:os\.system|os\.popen|subprocess\.call|subprocess\.run|subprocess\.Popen)\s*\(\s*f?["']`,
+						Title:       "Potential command injection via string construction (Python)",
+						Category:    "rce",
+						Severity:    "critical",
+						Confidence:  0.7,
+						Remediation: "Use subprocess with a list of arguments (shell=False) instead of string-based command construction. Never pass user input directly into shell commands.",
+						MaxMatches:  10,
+					},
+					{
+						ID:          "exec-shell-true-py",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `subprocess\.\w+\([^)]*shell\s*=\s*True`,
+						Title:       "Subprocess invocation with shell=True (Python)",
+						Category:    "rce",
+						Severity:    "high",
+						Confidence:  0.65,
+						Remediation: "Avoid shell=True in subprocess calls. Use argument lists instead of shell command strings to prevent injection.",
+						MaxMatches:  10,
+					},
+					{
+						ID:          "exec-command-go",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `exec\.Command\s*\(\s*["'](?:sh|bash|cmd|powershell)["']\s*,\s*["']-c["']`,
+						Title:       "Shell command execution via exec.Command (Go)",
+						Category:    "rce",
+						Severity:    "high",
+						Confidence:  0.65,
+						Remediation: "Avoid launching a shell with exec.Command. Execute the target binary directly with explicit arguments to prevent injection.",
+						MaxMatches:  10,
+					},
+					{
+						ID:          "eval-usage",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `\beval\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.|input|args|argv)`,
+						Title:       "eval() called with potentially user-controlled input",
+						Category:    "rce",
+						Severity:    "critical",
+						Confidence:  0.8,
+						Remediation: "Never use eval() with user-controlled input. Use safe parsing alternatives like JSON.parse() or purpose-built parsers.",
+						MaxMatches:  10,
+					},
+				},
+			},
+			Scope: Scope{
+				IncludeGlobs: []string{
+					"**/*.go", "**/*.py", "**/*.js", "**/*.ts", "**/*.jsx", "**/*.tsx",
+					"**/*.rb", "**/*.php", "**/*.java",
+				},
+				ExcludeGlobs: []string{
+					"**/node_modules/**", "**/vendor/**",
+				},
+			},
+			CategoriesHint: []string{"rce", "input_validation"},
+			SeverityHint:   "critical",
+			ConfidenceHint: 0.75,
+			Origin: Origin{
+				Method: "builtin",
+			},
+		},
+		{
+			APIVersion:  APIVersion,
+			ID:          "path_traversal",
+			Name:        "Path Traversal Patterns",
+			Status:      StatusEnabled,
+			Source:      SourceBuiltin,
+			Engine:      EngineRule,
+			Description: "Detects patterns where file paths are constructed from user input without proper sanitization, enabling directory traversal attacks.",
+			Rule: Rule{
+				Target: RuleTargetFileContent,
+				Detectors: []RuleDetector{
+					{
+						ID:          "path-join-user-input",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?:path\.join|path\.resolve|os\.path\.join)\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.|input|args)`,
+						Title:       "File path constructed from user-controlled input",
+						Category:    "path_traversal",
+						Severity:    "high",
+						Confidence:  0.7,
+						Remediation: "Validate that resolved paths stay within the intended base directory. Use path canonicalization and check that the result starts with the expected prefix.",
+						MaxMatches:  10,
+					},
+					{
+						ID:          "dot-dot-slash-literal",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?:readFile|readFileSync|createReadStream|open)\s*\([^)]*\.\./`,
+						Title:       "File operation with parent directory traversal",
+						Category:    "path_traversal",
+						Severity:    "high",
+						Confidence:  0.75,
+						Remediation: "Avoid using relative paths with '../' in file operations. Resolve paths against a known safe base directory and reject traversal sequences.",
+						MaxMatches:  10,
+					},
+					{
+						ID:          "unsanitized-filepath-go",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?:os\.Open|os\.ReadFile|os\.Create|ioutil\.ReadFile)\s*\(\s*(?:r\.|req\.|c\.|ctx\.)`,
+						Title:       "File operation with request-derived path (Go)",
+						Category:    "path_traversal",
+						Severity:    "high",
+						Confidence:  0.7,
+						Remediation: "Use filepath.Clean() and verify the cleaned path is within the expected base directory before opening files from user input.",
+						MaxMatches:  10,
+					},
+					{
+						ID:          "send-file-user-input",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?:res\.sendFile|res\.download|send_file|send_from_directory)\s*\([^)]*(?:req\.|request\.|params\.|query\.|body\.)`,
+						Title:       "File serving endpoint with user-controlled path",
+						Category:    "path_traversal",
+						Severity:    "high",
+						Confidence:  0.75,
+						Remediation: "Restrict served files to a specific directory. Validate filenames against an allowlist or verify resolved paths are within the intended root.",
+						MaxMatches:  10,
+					},
+				},
+			},
+			Scope: Scope{
+				IncludeGlobs: []string{
+					"**/*.go", "**/*.py", "**/*.js", "**/*.ts", "**/*.jsx", "**/*.tsx",
+					"**/*.rb", "**/*.php", "**/*.java",
+				},
+				ExcludeGlobs: []string{
+					"**/node_modules/**", "**/vendor/**",
+				},
+			},
+			CategoriesHint: []string{"path_traversal", "input_validation"},
+			SeverityHint:   "high",
+			ConfidenceHint: 0.7,
+			Origin: Origin{
+				Method: "builtin",
+			},
+		},
+		{
+			APIVersion:  APIVersion,
+			ID:          "insecure_crypto",
+			Name:        "Insecure Cryptography",
+			Status:      StatusEnabled,
+			Source:      SourceBuiltin,
+			Engine:      EngineRule,
+			Description: "Detects usage of weak or broken cryptographic algorithms and insecure cryptographic practices.",
+			Rule: Rule{
+				Target: RuleTargetFileContent,
+				Detectors: []RuleDetector{
+					{
+						ID:          "md5-usage",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?i)(?:md5\.New|md5\.Sum|hashlib\.md5|crypto\.createHash\s*\(\s*['"]md5['"]|MessageDigest\.getInstance\s*\(\s*['"]MD5['"])`,
+						Title:       "MD5 hash function used (cryptographically broken)",
+						Category:    "crypto",
+						Severity:    "medium",
+						Confidence:  0.8,
+						Remediation: "Replace MD5 with SHA-256 or SHA-3 for integrity checks, or use bcrypt/scrypt/argon2 for password hashing.",
+						MaxMatches:  10,
+					},
+					{
+						ID:          "sha1-usage",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?i)(?:sha1\.New|sha1\.Sum|hashlib\.sha1|crypto\.createHash\s*\(\s*['"]sha1['"]|MessageDigest\.getInstance\s*\(\s*['"]SHA-?1['"])`,
+						Title:       "SHA-1 hash function used (cryptographically weak)",
+						Category:    "crypto",
+						Severity:    "medium",
+						Confidence:  0.75,
+						Remediation: "Replace SHA-1 with SHA-256 or SHA-3. SHA-1 is vulnerable to collision attacks and should not be used for security purposes.",
+						MaxMatches:  10,
+					},
+					{
+						ID:          "ecb-mode",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?i)(?:AES/ECB|\.MODE_ECB|cipher\.NewECB|createCipheriv\s*\(\s*['"]aes-\d+-ecb['"])`,
+						Title:       "AES ECB mode detected (insecure block cipher mode)",
+						Category:    "crypto",
+						Severity:    "high",
+						Confidence:  0.9,
+						Remediation: "Use AES-GCM or AES-CBC with HMAC instead of ECB mode. ECB does not provide semantic security and leaks patterns in ciphertext.",
+						MaxMatches:  5,
+					},
+					{
+						ID:          "des-usage",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?i)(?:DES/|des\.new|\.MODE_DES|createCipheriv\s*\(\s*['"]des['"]|DESede|DES\.encrypt)`,
+						Title:       "DES/3DES encryption detected (weak cipher)",
+						Category:    "crypto",
+						Severity:    "high",
+						Confidence:  0.85,
+						Remediation: "Replace DES or Triple-DES with AES-256-GCM. DES has a 56-bit key size and is trivially breakable.",
+						MaxMatches:  5,
+					},
+					{
+						ID:          "hardcoded-iv",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?i)(?:iv|nonce|initialization.vector)\s*[:=]\s*(?:["'][0-9a-fA-F]{16,}["']|(?:bytes|bytearray)\s*\(\s*b?["'][^"']+["']\s*\)|new\s+byte\s*\[\s*\]\s*\{)`,
+						Title:       "Hardcoded initialization vector or nonce detected",
+						Category:    "crypto",
+						Severity:    "high",
+						Confidence:  0.7,
+						Remediation: "Generate IVs and nonces using a cryptographically secure random number generator. Never reuse or hardcode them.",
+						MaxMatches:  5,
+					},
+					{
+						ID:          "math-rand-crypto",
+						Kind:        RuleDetectorRegex,
+						Pattern:     `(?:math/rand|Math\.random\(\)|random\.random\(\)|rand\.Intn|rand\.Int\(\))`,
+						Title:       "Non-cryptographic random number generator in potentially security-sensitive context",
+						Category:    "crypto",
+						Severity:    "medium",
+						Confidence:  0.5,
+						Remediation: "Use crypto/rand (Go), crypto.randomBytes (Node.js), or secrets module (Python) for security-sensitive random values like tokens and keys.",
+						MaxMatches:  5,
+					},
+				},
+			},
+			Scope: Scope{
+				IncludeGlobs: []string{
+					"**/*.go", "**/*.py", "**/*.js", "**/*.ts", "**/*.jsx", "**/*.tsx",
+					"**/*.java", "**/*.rb", "**/*.php", "**/*.rs", "**/*.cs",
+				},
+				ExcludeGlobs: []string{
+					"**/node_modules/**", "**/vendor/**",
+					"**/*_test.go", "**/test/**", "**/*.test.*",
+				},
+			},
+			CategoriesHint: []string{"crypto", "configuration"},
+			SeverityHint:   "high",
+			ConfidenceHint: 0.75,
+			Origin: Origin{
+				Method: "builtin",
+			},
+		},
+
+		// ── AI-engine checks ────────────────────────────────────────────
+
+		{
+			APIVersion:  APIVersion,
+			ID:          "ssrf",
+			Name:        "Server-Side Request Forgery",
+			Status:      StatusEnabled,
+			Source:      SourceBuiltin,
+			Engine:      EngineAI,
+			Description: "Identifies server-side request forgery vulnerabilities where user-controlled URLs " +
+				"are passed to server-side HTTP clients without validation.",
+			Instructions: `Track focus: server-side request forgery (SSRF)
+- HTTP client calls (fetch, axios, http.get, requests.get, net/http, etc.) where the URL or host is derived from user input
+- Webhook or callback URL handlers that accept arbitrary URLs from users
+- URL redirect endpoints that follow user-supplied URLs server-side
+- Internal service URLs or cloud metadata endpoints (169.254.169.254) reachable via user-controlled requests
+- Missing URL allowlists or hostname validation before making outbound requests
+- DNS rebinding risk: validating hostname at check time but resolving differently at fetch time`,
+			CategoriesHint: []string{"ssrf", "input_validation"},
+			SeverityHint:   "high",
+			ConfidenceHint: 0.75,
+			Origin: Origin{
+				Method: "builtin",
+			},
+		},
+		{
+			APIVersion:  APIVersion,
+			ID:          "missing_rate_limiting",
+			Name:        "Missing Rate Limiting",
+			Status:      StatusEnabled,
+			Source:      SourceBuiltin,
+			Engine:      EngineAI,
+			Description: "Identifies API endpoints and sensitive operations that lack rate limiting or throttling, " +
+				"enabling brute-force, credential stuffing, or resource exhaustion attacks.",
+			Instructions: `Track focus: missing rate limiting and throttling
+- Authentication endpoints (login, register, password reset) without rate limiting
+- API endpoints that perform expensive operations (database queries, file processing, AI inference) without request throttling
+- Endpoints accepting file uploads without size or frequency limits
+- Public-facing API routes with no rate-limiting middleware or decorator
+- Token generation or OTP verification endpoints vulnerable to brute-force
+- Missing rate-limit headers (X-RateLimit-*, Retry-After) in API responses
+Note: Focus on endpoints that are clearly sensitive or expensive. Not every endpoint needs rate limiting.`,
+			CategoriesHint: []string{"dos", "auth", "api_security"},
+			SeverityHint:   "medium",
+			ConfidenceHint: 0.65,
+			Origin: Origin{
+				Method: "builtin",
+			},
+		},
+		{
+			APIVersion:  APIVersion,
+			ID:          "insecure_deserialization",
+			Name:        "Insecure Deserialization",
+			Status:      StatusEnabled,
+			Source:      SourceBuiltin,
+			Engine:      EngineAI,
+			Description: "Identifies unsafe deserialization of untrusted data that could lead to " +
+				"remote code execution, injection, or data tampering.",
+			Instructions: `Track focus: insecure deserialization
+- Python: pickle.loads(), yaml.load() without SafeLoader, marshal.loads() on untrusted data
+- JavaScript/TypeScript: node-serialize, js-yaml.load() with dangerous schema, JSON.parse() of untrusted data fed directly to object construction
+- Java: ObjectInputStream.readObject(), XMLDecoder, XStream without allowlist, Kryo without registration
+- Go: gob.Decode, encoding/xml with untrusted input into complex structures
+- Ruby: Marshal.load(), YAML.load() on user input
+- General: any deserialization of data from HTTP requests, message queues, or external files without schema validation
+- Look for missing integrity checks (HMAC/signature) on serialized data before deserialization
+- Flag cases where deserialized objects are used to make security decisions or construct queries`,
+			CategoriesHint: []string{"deserialization", "rce", "input_validation"},
+			SeverityHint:   "high",
+			ConfidenceHint: 0.7,
+			Origin: Origin{
+				Method: "builtin",
+			},
+		},
 	}
 }
