@@ -155,6 +155,69 @@ func TestCopyFileWithLimit_DetectsSourceReplacement(t *testing.T) {
 	}
 }
 
+func TestSkipFile_OversizedFile(t *testing.T) {
+	reason, skip := skipFile("big.go", "big.go", maxFileBytes+1, 0)
+	if !skip {
+		t.Fatal("expected oversized file to be skipped")
+	}
+	if reason != "file_too_large" {
+		t.Fatalf("expected reason file_too_large, got %q", reason)
+	}
+}
+
+func TestSkipFile_SmallFileIncluded(t *testing.T) {
+	reason, skip := skipFile("main.go", "main.go", 1024, 0)
+	if skip {
+		t.Fatalf("expected small file to be included, got reason=%q", reason)
+	}
+}
+
+func TestSkipFile_ExactlyAtLimit(t *testing.T) {
+	reason, skip := skipFile("exact.go", "exact.go", maxFileBytes, 0)
+	if skip {
+		t.Fatalf("expected file at exact limit to be included, got reason=%q", reason)
+	}
+}
+
+func TestStageFolder_SkipsOversizedFile(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "small.go"), "package main")
+
+	// Create an oversized file by writing just above the limit
+	bigPath := filepath.Join(root, "big.go")
+	f, err := os.Create(bigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Write maxFileBytes+1 bytes
+	buf := make([]byte, maxFileBytes+1)
+	for i := range buf {
+		buf[i] = 'x'
+	}
+	if _, err := f.Write(buf); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	out := t.TempDir()
+	res, err := Stage(StageOptions{
+		InputPath: root,
+		OutDir:    out,
+		MaxFiles:  100,
+		MaxBytes:  int64(maxFileBytes * 3),
+	})
+	if err != nil {
+		t.Fatalf("stage failed: %v", err)
+	}
+	if res.Manifest.IncludedFiles != 1 {
+		t.Fatalf("expected 1 included file (small.go), got %d", res.Manifest.IncludedFiles)
+	}
+	if got := res.Manifest.SkippedByReason["file_too_large"]; got != 1 {
+		t.Fatalf("expected 1 file_too_large skip, got %d", got)
+	}
+}
+
 func mustWrite(t *testing.T, path string, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

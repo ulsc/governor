@@ -32,8 +32,9 @@ type StageResult struct {
 }
 
 const (
-	dirPerm  = 0o700
-	filePerm = 0o600
+	dirPerm      = 0o700
+	filePerm     = 0o600
+	maxFileBytes = 10 * 1024 * 1024 // 10 MB per file
 )
 
 var skipDirNames = map[string]struct{}{
@@ -214,6 +215,10 @@ func stageFolderToWorkspace(srcRoot string, dstRoot string, manifest *model.Inpu
 func skipFile(name string, rel string, size int64, mode os.FileMode) (reason string, skip bool) {
 	if mode&os.ModeSymlink != 0 {
 		return "symlink", true
+	}
+	if size > maxFileBytes {
+		fmt.Fprintf(os.Stderr, "[governor] warning: skipping oversized file (%d bytes): %s\n", size, rel)
+		return "file_too_large", true
 	}
 	if isSensitiveFileName(name) {
 		return "skip_secret", true
