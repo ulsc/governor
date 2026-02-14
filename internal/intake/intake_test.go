@@ -179,6 +179,59 @@ func TestSkipFile_ExactlyAtLimit(t *testing.T) {
 	}
 }
 
+func TestIsSensitiveFileName_CloudCredentials(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"credentials", true},
+		{"credentials.json", true},
+		{"application_default_credentials.json", true},
+		{"kubeconfig", true},
+		{".env", true},
+		{"main.go", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSensitiveFileName(tt.name)
+			if got != tt.want {
+				t.Errorf("isSensitiveFileName(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsSensitiveFilePath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{".aws/credentials", true},
+		{".aws/config", true},
+		{".kube/config", true},
+		{".docker/config.json", true},
+		{"home/user/.aws/credentials", true},
+		{"main.go", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := isSensitiveFilePath(tt.path)
+			if got != tt.want {
+				t.Errorf("isSensitiveFilePath(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSkipDirNames_IncludesIDEAndBuildDirs(t *testing.T) {
+	for _, dir := range []string{"__pycache__", ".terraform", ".idea", ".vscode"} {
+		if _, ok := skipDirNames[dir]; !ok {
+			t.Errorf("expected %q in skipDirNames", dir)
+		}
+	}
+}
+
 func TestStageFolder_SkipsOversizedFile(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "small.go"), "package main")

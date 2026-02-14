@@ -40,6 +40,7 @@ const (
 var skipDirNames = map[string]struct{}{
 	".git": {}, ".governor": {}, "bin": {}, "node_modules": {}, "vendor": {}, "dist": {}, "build": {}, ".next": {}, "target": {}, "coverage": {},
 	".aws": {}, ".ssh": {}, ".gnupg": {},
+	"__pycache__": {}, ".terraform": {}, ".idea": {}, ".vscode": {},
 }
 
 var skipFileExts = map[string]struct{}{
@@ -223,6 +224,9 @@ func skipFile(name string, rel string, size int64, mode os.FileMode) (reason str
 	if isSensitiveFileName(name) {
 		return "skip_secret", true
 	}
+	if isSensitiveFilePath(rel) {
+		return "skip_secret", true
+	}
 	if _, ok := skipFileNames[name]; ok {
 		return "skip_name", true
 	}
@@ -245,7 +249,8 @@ func isSensitiveFileName(name string) bool {
 		return false
 	}
 	switch name {
-	case ".env", ".npmrc", ".netrc", ".pypirc", "id_rsa", "id_ed25519":
+	case ".env", ".npmrc", ".netrc", ".pypirc", "id_rsa", "id_ed25519",
+		"credentials", "credentials.json", "application_default_credentials.json", "kubeconfig":
 		return true
 	}
 	if strings.HasPrefix(name, ".env.") {
@@ -253,6 +258,25 @@ func isSensitiveFileName(name string) bool {
 	}
 	if strings.HasPrefix(name, "secrets.") {
 		return true
+	}
+	return false
+}
+
+func isSensitiveFilePath(rel string) bool {
+	rel = strings.ToLower(filepath.ToSlash(strings.TrimSpace(rel)))
+	if rel == "" {
+		return false
+	}
+	sensitiveRelPaths := []string{
+		".aws/credentials",
+		".aws/config",
+		".kube/config",
+		".docker/config.json",
+	}
+	for _, p := range sensitiveRelPaths {
+		if rel == p || strings.HasSuffix(rel, "/"+p) {
+			return true
+		}
 	}
 	return false
 }
