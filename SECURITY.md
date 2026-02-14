@@ -4,16 +4,15 @@
 
 If you discover a security vulnerability in Governor, please report it responsibly.
 
-**Do not open a public GitHub issue for security vulnerabilities.**
+Please open a GitHub issue:
+**https://github.com/ulsc/governor/issues/new**
 
-Instead, please email: **security@governor.sh**
+Use a title prefix of **[SECURITY]** and include:
 
-Include:
-
-- A description of the vulnerability
-- Steps to reproduce
-- Affected versions
-- Any potential impact assessment
+- A clear description of the vulnerability
+- Reproduction steps
+- Affected versions or commit SHAs
+- Potential impact assessment
 
 ## Response Timeline
 

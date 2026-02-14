@@ -85,7 +85,7 @@ go test -mod=readonly -v ./internal/worker/...
 
 ## Security Vulnerabilities
 
-Do not open public issues for security vulnerabilities. See [SECURITY.md](SECURITY.md) for the reporting process.
+Report security vulnerabilities via GitHub issues using the process in [SECURITY.md](SECURITY.md).
 
 ## License
 

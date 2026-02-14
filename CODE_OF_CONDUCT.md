@@ -46,8 +46,10 @@ This Code of Conduct applies within all project spaces, including:
 
 ## Reporting
 
-If you experience or witness unacceptable behavior, report it to the maintainers
-at **conduct@governor.sh**.
+If you experience or witness unacceptable behavior, open a GitHub issue:
+**https://github.com/ulsc/governor/issues/new**
+
+Use a title prefix of **[CODE_OF_CONDUCT]** and include relevant context.
 
 All reports will be reviewed promptly and handled confidentially to the extent
 possible.
