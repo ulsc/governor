@@ -6,7 +6,6 @@ This guide walks you through installation, your first audit, and understanding t
 
 ## Prerequisites
 
-- **Go 1.22+** installed ([download](https://go.dev/dl/))
 - **An AI provider** configured (for AI-powered checks) -- see [Configuration](./configuration.md) for details
 - `codex` CLI in your `PATH` if using the default `codex-cli` provider
 
@@ -14,7 +13,25 @@ This guide walks you through installation, your first audit, and understanding t
 
 ## Installation
 
+### Install script (recommended)
+
+The fastest way to install Governor is with the install script:
+
+```bash
+curl -fsSL https://governor.sh/install.sh | bash
+```
+
+This detects your platform, downloads the latest release, verifies the checksum, and installs the binary. You can override the install directory:
+
+```bash
+INSTALL_DIR=/opt/bin curl -fsSL https://governor.sh/install.sh | bash
+```
+
+Supported platforms: Linux (amd64, arm64), macOS (amd64, arm64), Windows (amd64 via WSL/Git Bash/MSYS2).
+
 ### Build from source
+
+> Requires **Go 1.22+** ([download](https://go.dev/dl/))
 
 ```bash
 git clone <repo-url>
@@ -35,10 +52,10 @@ This copies the binary to `~/.local/bin/governor`. Make sure `~/.local/bin` is i
 ### Verify the installation
 
 ```bash
-governor help
+governor version
 ```
 
-You should see the usage summary listing the `init`, `audit`, `isolate`, and `checks` commands.
+You should see the installed version (e.g. `governor v0.1.0`). You can also run `governor help` to see the full usage summary.
 
 ## Your First Audit
 

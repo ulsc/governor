@@ -83,33 +83,52 @@ Governor is built for organizations that receive many source folders/zips and ne
 ## Quick Start
 
 ```bash
-# 1) Build
-make build
+# 1) Install
+curl -fsSL https://governor.sh/install.sh | bash
 
-# 2) Initialize the .governor/ workspace
-./bin/governor init
+# 2) Verify
+governor version
 
-# 3) Run audit on a folder
-./bin/governor audit /path/to/app
+# 3) Initialize the .governor/ workspace
+governor init
 
-# 4) Initialize a draft custom check from a template
-./bin/governor checks init \
+# 4) Run audit on a folder
+governor audit /path/to/app
+
+# 5) Initialize a draft custom check from a template
+governor checks init \
   --id authz-missing-role-check \
   --template authz-missing-checks \
   --name "Missing role checks"
 
-# 5) Enable it
-./bin/governor checks enable authz-missing-role-check
+# 6) Enable it
+governor checks enable authz-missing-role-check
 
-# 6) Re-run audit with built-ins + enabled custom checks
-./bin/governor audit /path/to/app
+# 7) Re-run audit with built-ins + enabled custom checks
+governor audit /path/to/app
 ```
 
 ## Installation
 
+### Install script (recommended)
+
+```bash
+curl -fsSL https://governor.sh/install.sh | bash
+```
+
+Override the install directory:
+
+```bash
+INSTALL_DIR=/opt/bin curl -fsSL https://governor.sh/install.sh | bash
+```
+
+The script detects your OS and architecture, downloads the latest release binary, verifies the SHA-256 checksum, and installs to `/usr/local/bin` (or `~/.local/bin` if not writable).
+
+Supported platforms: Linux (amd64, arm64), macOS (amd64, arm64), Windows (amd64 via WSL/Git Bash/MSYS2).
+
 ### Requirements
 
-- Go `1.22+`
+- Go `1.22+` (only if building from source)
 - `codex` CLI in `PATH` when using `--ai-provider codex-cli`
 
 ### Built-in AI Profiles
@@ -184,6 +203,31 @@ governor init --force
 If run outside a git repository, Governor warns and initializes in the current directory.
 
 ## CI/CD
+
+### GitHub Action
+
+The easiest way to run Governor in CI is with the official GitHub Action:
+
+```yaml
+name: Security Audit
+on: [push, pull_request]
+
+permissions:
+  security-events: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ulsc/governor-action@v1
+        with:
+          fail-on: high
+```
+
+This installs Governor, runs the audit, uploads SARIF results to GitHub Code Scanning, and saves audit artifacts. See [governor-action](https://github.com/ulsc/governor-action) for full documentation.
+
+### Internal workflows
 
 Governor uses GitHub Actions with two maintained workflows:
 
