@@ -5,6 +5,8 @@ basis by maintainers.
 
 ## Reporting Vulnerabilities
 
+If you discover a security vulnerability in Governor, please report it responsibly.
+
 Open a GitHub issue:
 **https://github.com/ulsc/governor/issues/new**
 
