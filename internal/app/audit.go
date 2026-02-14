@@ -153,40 +153,18 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 		return
 	}
 
-	checksDirs, dirErr := checks.ResolveReadDirs(opts.ChecksDir)
-	if dirErr != nil {
-		err = dirErr
-		return
-	}
-
-	customDefs, checkWarnings, loadErr := checks.LoadCustomDirs(checksDirs)
-	if loadErr != nil {
-		err = loadErr
-		return
-	}
-
-	builtinDefs := checks.Builtins()
-	selection, selectionErr := checks.BuildSelection(builtinDefs, customDefs, checks.SelectionOptions{
-		IncludeBuiltins: true,
-		IncludeCustom:   !opts.NoCustomChecks,
-		OnlyIDs:         opts.OnlyChecks,
-		SkipIDs:         opts.SkipChecks,
+	selection, selectionErr := checks.ResolveAuditSelection(checks.AuditSelectionOptions{
+		ChecksDir:      opts.ChecksDir,
+		NoCustomChecks: opts.NoCustomChecks,
+		OnlyIDs:        opts.OnlyChecks,
+		SkipIDs:        opts.SkipChecks,
 	})
 	if selectionErr != nil {
 		err = selectionErr
 		return
 	}
 
-	runWarnings := make([]string, 0, len(checkWarnings)+len(selection.Warnings)+8)
-	for _, msg := range checkWarnings {
-		runWarnings = append(runWarnings, msg)
-		sink.Emit(progress.Event{
-			Type:    progress.EventRunWarning,
-			RunID:   runID,
-			Status:  "warning",
-			Message: msg,
-		})
-	}
+	runWarnings := make([]string, 0, len(selection.Warnings)+8)
 	for _, msg := range selection.Warnings {
 		runWarnings = append(runWarnings, msg)
 		sink.Emit(progress.Event{
@@ -198,17 +176,12 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 	}
 
 	enabledCheckIDs := make([]string, 0, len(selection.Checks))
-	builtinCount := 0
-	customCount := 0
 	for _, def := range selection.Checks {
 		enabledCheckIDs = append(enabledCheckIDs, def.ID)
-		switch def.Source {
-		case checks.SourceBuiltin:
-			builtinCount++
-		default:
-			customCount++
-		}
 	}
+	builtinCount, customCount := checks.CountChecksBySource(selection.Checks)
+	aiCount, ruleCount := checks.CountChecksByEngine(selection.Checks)
+	codexRequired := checks.SelectionRequiresCodex(selection.Checks)
 
 	workerResults := worker.RunAll(ctx, stage.WorkspacePath, stage.Manifest, selection.Checks, worker.RunOptions{
 		CodexBin:    opts.CodexBin,
@@ -261,10 +234,14 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 			CodexSHA256:       opts.CodexSHA256,
 			ExecutionMode:     opts.ExecutionMode,
 			CodexSandbox:      opts.SandboxMode,
+			CodexRequired:     codexRequired,
+			CodexUsed:         codexRequired,
 			Workers:           opts.Workers,
 			EnabledChecks:     len(enabledCheckIDs),
 			BuiltInChecks:     builtinCount,
 			CustomChecks:      customCount,
+			AIChecks:          aiCount,
+			RuleChecks:        ruleCount,
 			CheckIDs:          enabledCheckIDs,
 		},
 		InputSummary: model.InputSummary{

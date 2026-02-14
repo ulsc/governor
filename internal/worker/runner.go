@@ -172,6 +172,9 @@ func runOneTrack(parent context.Context, workspace string, manifest model.InputM
 
 	logPath := filepath.Join(opts.OutDir, fmt.Sprintf("worker-%s.log", trackName))
 	outputPath := filepath.Join(opts.OutDir, fmt.Sprintf("worker-%s-output.json", trackName))
+	if checkDef.Engine == checks.EngineRule {
+		return runRuleTrack(ctx, workspace, manifest, checkDef, opts, started, logPath, outputPath)
+	}
 	promptText := prompt.BuildForCheck(checkDef, manifest)
 	execRes := executeTrackWithRetries(
 		ctx,
@@ -253,6 +256,90 @@ func runOneTrack(parent context.Context, workspace string, manifest model.InputM
 		Error:        res.Error,
 	})
 
+	return res
+}
+
+func runRuleTrack(
+	ctx context.Context,
+	workspace string,
+	manifest model.InputManifest,
+	checkDef checks.Definition,
+	opts RunOptions,
+	started time.Time,
+	logPath string,
+	outputPath string,
+) model.WorkerResult {
+	execRes := executeRuleCheck(ctx, workspace, manifest, checkDef)
+	logBytes := []byte(strings.TrimSpace(redact.Text(execRes.logText)) + "\n")
+	if strings.TrimSpace(execRes.logText) == "" {
+		logBytes = []byte("[governor] deterministic rule engine produced no log output\n")
+	}
+	if writeErr := safefile.WriteFileAtomic(logPath, logBytes, 0o600); writeErr != nil {
+		logBytes = append(logBytes, []byte("\n[governor] failed to write worker log: "+writeErr.Error())...)
+	}
+
+	payload := redactWorkerOutput(execRes.payload)
+	marshaled, marshalErr := json.MarshalIndent(payload, "", "  ")
+	if marshalErr == nil {
+		if writeErr := safefile.WriteFileAtomic(outputPath, marshaled, 0o600); writeErr != nil {
+			execRes.err = joinErr(execRes.err, fmt.Errorf("write deterministic worker output: %w", writeErr))
+		}
+	} else {
+		execRes.err = joinErr(execRes.err, fmt.Errorf("marshal deterministic worker output: %w", marshalErr))
+	}
+
+	payload, rawOutputBytes, parsedOutput, parseErr := parseWorkerOutput(outputPath)
+	if parseErr != nil {
+		execRes.err = joinErr(execRes.err, parseErr)
+	}
+	if parsedOutput {
+		opts.Sink.Emit(progress.Event{
+			Type:    progress.EventWorkerOutput,
+			Track:   checkDef.ID,
+			Message: outputPath,
+		})
+	}
+
+	normalized := normalizeFindings(payload.Findings, checkDef.ID)
+	completed := time.Now().UTC()
+	res := model.WorkerResult{
+		Track:        checkDef.ID,
+		StartedAt:    started,
+		CompletedAt:  completed,
+		DurationMS:   completed.Sub(started).Milliseconds(),
+		FindingCount: len(normalized),
+		Findings:     normalized,
+		RawOutput:    strings.TrimSpace(redact.Text(string(rawOutputBytes))),
+		LogPath:      logPath,
+		OutputPath:   outputPath,
+	}
+
+	switch {
+	case execRes.err == nil:
+		res.Status = "success"
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		res.Status = "timeout"
+		res.Error = redact.Text(execRes.err.Error())
+	case parsedOutput:
+		res.Status = "partial"
+		res.Error = redact.Text(execRes.err.Error())
+	default:
+		res.Status = "failed"
+		res.Error = redact.Text(execRes.err.Error())
+	}
+
+	if opts.Verbose {
+		fmt.Fprintf(os.Stderr, "[governor] track=%s status=%s findings=%d duration=%dms\n", res.Track, res.Status, res.FindingCount, res.DurationMS)
+	}
+	opts.Sink.Emit(progress.Event{
+		Type:         progress.EventWorkerFinished,
+		At:           completed,
+		Track:        res.Track,
+		Status:       res.Status,
+		FindingCount: res.FindingCount,
+		DurationMS:   res.DurationMS,
+		Error:        res.Error,
+	})
 	return res
 }
 

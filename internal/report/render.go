@@ -297,6 +297,8 @@ func RenderHTML(report model.AuditReport) string {
 	if strings.TrimSpace(report.RunMetadata.CodexSHA256) != "" {
 		b.WriteString(fmt.Sprintf("        <li><strong>Codex SHA-256:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.CodexSHA256)))
 	}
+	b.WriteString(fmt.Sprintf("        <li><strong>Codex required:</strong> <code>%t</code></li>\n", report.RunMetadata.CodexRequired))
+	b.WriteString(fmt.Sprintf("        <li><strong>Codex used:</strong> <code>%t</code></li>\n", report.RunMetadata.CodexUsed))
 	if strings.TrimSpace(report.RunMetadata.ExecutionMode) != "" {
 		modeLine := report.RunMetadata.ExecutionMode
 		if strings.TrimSpace(report.RunMetadata.CodexSandbox) != "" {
@@ -309,6 +311,10 @@ func RenderHTML(report model.AuditReport) string {
 			report.RunMetadata.EnabledChecks,
 			report.RunMetadata.BuiltInChecks,
 			report.RunMetadata.CustomChecks,
+		))
+		b.WriteString(fmt.Sprintf("        <li><strong>Check engines:</strong> ai=%d rule=%d</li>\n",
+			report.RunMetadata.AIChecks,
+			report.RunMetadata.RuleChecks,
 		))
 		if len(report.RunMetadata.CheckIDs) > 0 {
 			b.WriteString(fmt.Sprintf("        <li><strong>Check IDs:</strong> <code>%s</code></li>\n", htmlInline(strings.Join(report.RunMetadata.CheckIDs, ", "))))
@@ -462,6 +468,8 @@ func RenderMarkdown(report model.AuditReport) string {
 	if strings.TrimSpace(report.RunMetadata.CodexSHA256) != "" {
 		b.WriteString(fmt.Sprintf("- Codex sha256: `%s`\n", sanitizeInline(report.RunMetadata.CodexSHA256)))
 	}
+	b.WriteString(fmt.Sprintf("- Codex required: `%t`\n", report.RunMetadata.CodexRequired))
+	b.WriteString(fmt.Sprintf("- Codex used: `%t`\n", report.RunMetadata.CodexUsed))
 	if strings.TrimSpace(report.RunMetadata.ExecutionMode) != "" {
 		modeLine := report.RunMetadata.ExecutionMode
 		if strings.TrimSpace(report.RunMetadata.CodexSandbox) != "" {
@@ -474,6 +482,10 @@ func RenderMarkdown(report model.AuditReport) string {
 			report.RunMetadata.EnabledChecks,
 			report.RunMetadata.BuiltInChecks,
 			report.RunMetadata.CustomChecks,
+		))
+		b.WriteString(fmt.Sprintf("- Check engines: ai=%d, rule=%d\n",
+			report.RunMetadata.AIChecks,
+			report.RunMetadata.RuleChecks,
 		))
 		if len(report.RunMetadata.CheckIDs) > 0 {
 			b.WriteString(fmt.Sprintf("- Check IDs: `%s`\n", strings.Join(report.RunMetadata.CheckIDs, ", ")))

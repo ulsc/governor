@@ -69,10 +69,14 @@ type RunMetadata struct {
 	CodexSHA256       string    `json:"codex_sha256,omitempty"`
 	ExecutionMode     string    `json:"execution_mode,omitempty"`
 	CodexSandbox      string    `json:"codex_sandbox,omitempty"`
+	CodexRequired     bool      `json:"codex_required"`
+	CodexUsed         bool      `json:"codex_used"`
 	Workers           int       `json:"workers"`
 	EnabledChecks     int       `json:"enabled_checks,omitempty"`
 	BuiltInChecks     int       `json:"builtin_checks,omitempty"`
 	CustomChecks      int       `json:"custom_checks,omitempty"`
+	AIChecks          int       `json:"ai_checks,omitempty"`
+	RuleChecks        int       `json:"rule_checks,omitempty"`
 	CheckIDs          []string  `json:"check_ids,omitempty"`
 }
 

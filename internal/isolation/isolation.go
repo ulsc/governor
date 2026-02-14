@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"governor/internal/checks"
 	"governor/internal/model"
 	reportpkg "governor/internal/report"
 	"governor/internal/safefile"
@@ -149,9 +150,16 @@ func RunAudit(ctx context.Context, opts AuditOptions) error {
 	}()
 
 	hostEnv := envToMap(os.Environ())
-	authMode, err := resolveAuthMode(opts.AuthMode, opts.CodexHome, hostEnv)
+	codexRequired, selectionWarnings, err := isolateSelectionRequiresCodex(opts)
 	if err != nil {
 		return err
+	}
+	authMode := AuthAuto
+	if codexRequired {
+		authMode, err = resolveAuthMode(opts.AuthMode, opts.CodexHome, hostEnv)
+		if err != nil {
+			return err
+		}
 	}
 
 	tmpRoot, err := os.MkdirTemp("", "governor-isolate-*")
@@ -161,7 +169,7 @@ func RunAudit(ctx context.Context, opts AuditOptions) error {
 	defer func() { _ = os.RemoveAll(tmpRoot) }()
 
 	var seedDir string
-	if authMode == AuthSubscription {
+	if codexRequired && authMode == AuthSubscription {
 		codexHome, err := resolveCodexHome(opts.CodexHome)
 		if err != nil {
 			return err
@@ -172,8 +180,9 @@ func RunAudit(ctx context.Context, opts AuditOptions) error {
 		}
 	}
 
-	containerEnv := buildContainerEnv(hostEnv, authMode)
-	preflight := runPreflight(ctx, runtimeBin, opts, authMode, seedDir, containerEnv)
+	containerEnv := buildContainerEnv(hostEnv, authMode, codexRequired)
+	preflight := runPreflight(ctx, runtimeBin, opts, authMode, seedDir, containerEnv, codexRequired)
+	preflight.Warnings = append(preflight.Warnings, selectionWarnings...)
 	emitPreflight(preflight)
 	govArgs := buildInnerGovernorArgs(opts, checksAbs != "")
 	runArgs := buildContainerRunArgs(opts, inputAbs, outAbs, checksAbs, seedDir, envNames(containerEnv), govArgs)
@@ -221,13 +230,19 @@ func runPreflight(
 	authMode AuthMode,
 	seedDir string,
 	containerEnv []string,
+	codexRequired bool,
 ) preflightResult {
 	result := preflightResult{
 		Notes: []string{
-			fmt.Sprintf("isolate preflight: auth-mode=%s network=%s", authMode, opts.NetworkPolicy),
+			fmt.Sprintf("isolate preflight: codex-required=%t network=%s", codexRequired, opts.NetworkPolicy),
 		},
 		Warnings: []string{},
 	}
+	if !codexRequired {
+		result.Notes = append(result.Notes, "isolate preflight: selected checks are deterministic only; skipping Codex auth/probe")
+		return result
+	}
+	result.Notes = append(result.Notes, fmt.Sprintf("isolate preflight: auth-mode=%s", authMode))
 
 	switch authMode {
 	case AuthSubscription:
@@ -950,12 +965,12 @@ func copyRegularFileNoSymlink(src string, dst string) error {
 	return nil
 }
 
-func buildContainerEnv(hostEnv map[string]string, authMode AuthMode) []string {
+func buildContainerEnv(hostEnv map[string]string, authMode AuthMode, codexRequired bool) []string {
 	keys := []string{
 		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
 		"http_proxy", "https_proxy", "no_proxy",
 	}
-	if authMode == AuthAPIKey {
+	if codexRequired && authMode == AuthAPIKey {
 		keys = append(keys,
 			"OPENAI_API_KEY",
 			"OPENAI_BASE_URL",
@@ -1181,4 +1196,35 @@ func normalizeSandboxMode(raw string) string {
 	default:
 		return ""
 	}
+}
+
+func isolateSelectionRequiresCodex(opts AuditOptions) (bool, []string, error) {
+	builtinDefs := checks.Builtins()
+	customDefs := []checks.Definition{}
+	warnings := make([]string, 0, 4)
+
+	if !opts.NoCustomChecks && strings.TrimSpace(opts.ChecksDir) != "" {
+		dirs, err := checks.ResolveReadDirs(opts.ChecksDir)
+		if err != nil {
+			return false, nil, err
+		}
+		loaded, loadWarnings, err := checks.LoadCustomDirs(dirs)
+		if err != nil {
+			return false, nil, err
+		}
+		customDefs = loaded
+		warnings = append(warnings, loadWarnings...)
+	}
+
+	selection, err := checks.BuildSelection(builtinDefs, customDefs, checks.SelectionOptions{
+		IncludeBuiltins: true,
+		IncludeCustom:   !opts.NoCustomChecks && strings.TrimSpace(opts.ChecksDir) != "",
+		OnlyIDs:         opts.OnlyChecks,
+		SkipIDs:         opts.SkipChecks,
+	})
+	if err != nil {
+		return false, nil, err
+	}
+	warnings = append(warnings, selection.Warnings...)
+	return checks.SelectionRequiresCodex(selection.Checks), warnings, nil
 }

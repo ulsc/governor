@@ -123,9 +123,23 @@ func runAudit(args []string) error {
 		sandboxValue = ""
 	}
 
-	codexInfo, err := trust.ResolveCodexBinary(context.Background(), *codexBin, *allowCustomCodexBin)
+	selection, err := checks.ResolveAuditSelection(checks.AuditSelectionOptions{
+		ChecksDir:      *checksDir,
+		NoCustomChecks: *noCustomChecks,
+		OnlyIDs:        onlyChecks.Values(),
+		SkipIDs:        skipChecks.Values(),
+	})
 	if err != nil {
 		return err
+	}
+	codexRequired := checks.SelectionRequiresCodex(selection.Checks)
+
+	codexInfo := trust.CodexBinary{}
+	if codexRequired {
+		codexInfo, err = trust.ResolveCodexBinary(context.Background(), *codexBin, *allowCustomCodexBin)
+		if err != nil {
+			return err
+		}
 	}
 
 	useTUI := isInteractiveTerminal()
@@ -342,6 +356,8 @@ func printAuditSummary(report model.AuditReport, paths app.ArtifactPaths) {
 	if strings.TrimSpace(report.RunMetadata.CodexVersion) != "" {
 		fmt.Printf("codex version:  %s\n", report.RunMetadata.CodexVersion)
 	}
+	fmt.Printf("codex required: %t\n", report.RunMetadata.CodexRequired)
+	fmt.Printf("codex used:     %t\n", report.RunMetadata.CodexUsed)
 	if strings.TrimSpace(report.RunMetadata.ExecutionMode) != "" {
 		mode := report.RunMetadata.ExecutionMode
 		if strings.TrimSpace(report.RunMetadata.CodexSandbox) != "" {
@@ -353,6 +369,10 @@ func printAuditSummary(report model.AuditReport, paths app.ArtifactPaths) {
 		report.RunMetadata.EnabledChecks,
 		report.RunMetadata.BuiltInChecks,
 		report.RunMetadata.CustomChecks,
+	)
+	fmt.Printf("check engines:  ai=%d rule=%d\n",
+		report.RunMetadata.AIChecks,
+		report.RunMetadata.RuleChecks,
 	)
 	fmt.Printf("findings:       %d (critical=%d high=%d medium=%d low=%d info=%d)\n",
 		len(report.Findings),

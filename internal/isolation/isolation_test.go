@@ -104,7 +104,7 @@ func TestBuildContainerEnv_SubscriptionDoesNotForwardAPIKeys(t *testing.T) {
 	env := buildContainerEnv(map[string]string{
 		"OPENAI_API_KEY": "secret",
 		"HTTPS_PROXY":    "http://proxy.local:8080",
-	}, AuthSubscription)
+	}, AuthSubscription, true)
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, "OPENAI_API_KEY") {
 		t.Fatalf("expected OPENAI_API_KEY to be excluded for subscription mode")
@@ -328,11 +328,47 @@ func TestRunPreflight_NetworkNoneSkipsProbe(t *testing.T) {
 		AuthAPIKey,
 		"",
 		nil,
+		true,
 	)
 
 	joinedWarnings := strings.Join(result.Warnings, "\n")
 	if !strings.Contains(joinedWarnings, "network policy is none") {
 		t.Fatalf("expected network-none warning, got: %v", result.Warnings)
+	}
+}
+
+func TestRunPreflight_DeterministicSelectionSkipsCodexProbe(t *testing.T) {
+	result := runPreflight(
+		t.Context(),
+		"docker",
+		AuditOptions{NetworkPolicy: NetworkUnrestricted},
+		AuthSubscription,
+		"",
+		nil,
+		false,
+	)
+	if len(result.Warnings) != 0 {
+		t.Fatalf("expected no warnings for deterministic-only preflight, got %v", result.Warnings)
+	}
+	joinedNotes := strings.Join(result.Notes, "\n")
+	if !strings.Contains(joinedNotes, "deterministic only") {
+		t.Fatalf("expected deterministic-only note, got %v", result.Notes)
+	}
+}
+
+func TestIsolateSelectionRequiresCodex_OnlyPromptInjectionBuiltin(t *testing.T) {
+	required, warnings, err := isolateSelectionRequiresCodex(AuditOptions{
+		NoCustomChecks: true,
+		OnlyChecks:     []string{"prompt_injection"},
+	})
+	if err != nil {
+		t.Fatalf("isolateSelectionRequiresCodex failed: %v", err)
+	}
+	if required {
+		t.Fatal("expected prompt_injection-only selection to not require codex")
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
 	}
 }
 
