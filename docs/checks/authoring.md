@@ -44,6 +44,16 @@ governor checks init \
   --name "Admin authorization enforcement"
 ```
 
+Deterministic non-AI rule template:
+
+```bash
+governor checks init \
+  --non-interactive \
+  --template prompt-injection-rule \
+  --id prompt-injection-local \
+  --name "Prompt Injection Local Rule"
+```
+
 ## Quality Checklist
 
 - Instructions are concrete and actionable.

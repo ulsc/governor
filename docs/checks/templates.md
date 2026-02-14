@@ -17,6 +17,7 @@ governor checks init --list-templates
 - `dependency-supply-chain`: dependency and CI/CD trust risks.
 - `config-hardening`: insecure default and hardening gaps.
 - `web-headers`: missing/weak HTTP security headers.
+- `prompt-injection-rule`: deterministic prompt-injection detector (`engine: rule`, no model call).
 
 ## Choosing a Template
 

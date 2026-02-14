@@ -11,12 +11,17 @@
 - `id`: `^[a-z0-9][a-z0-9_-]{1,63}$`
 - `status`: `draft|enabled|disabled`
 - `source`: `builtin|custom`
-- `instructions`: non-empty guidance for the worker
+- `engine`: `ai|rule` (defaults to `ai` if omitted)
+- `instructions`: non-empty when `engine=ai`
+- `rule.target` + `rule.detectors`: required when `engine=rule`
 
 ## Optional Fields
 
 - `name`
 - `description`
+- `rule.detectors[].case_sensitive`
+- `rule.detectors[].max_matches`
+- `rule.detectors[].title|category|severity|confidence|remediation`
 - `scope.include_globs`
 - `scope.exclude_globs`
 - `categories_hint`

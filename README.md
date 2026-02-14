@@ -57,12 +57,14 @@ Governor is built for organizations that receive many source folders/zips and ne
 2. Check selection:
 - Uses built-in checks by default.
 - Adds enabled custom checks from `./.governor/checks` and `~/.governor/checks` (repo-local takes precedence on duplicate IDs).
+- Supports `engine: ai` and deterministic `engine: rule` check types.
 
 3. Execution:
 - Runs checks with bounded concurrency (`--workers`, default `3`).
-- Each check executes with sandboxed Codex mode by default (`--execution-mode sandboxed`).
+- `engine: ai` checks execute with sandboxed Codex mode by default (`--execution-mode sandboxed`).
+- `engine: rule` checks execute deterministically without model calls.
 - Worker subprocesses run with a constrained environment allowlist.
-- Codex binary is resolved to a canonical path and attested (version + sha256) at startup.
+- Codex binary is resolved and attested only when selected checks require the AI engine.
 
 4. Reporting:
 - Merges and de-duplicates findings.
@@ -404,6 +406,7 @@ id: insecure-admin-surface
 name: Insecure admin surface
 status: draft # draft | enabled | disabled
 source: custom
+engine: ai # ai | rule
 description: Detect admin endpoints without authorization checks
 instructions: |
   Identify admin and privileged routes, then verify role/permission checks
@@ -421,6 +424,34 @@ severity_hint: high
 confidence_hint: 0.8
 origin:
   method: manual # manual | extracted
+```
+
+Deterministic rule example:
+
+```yaml
+api_version: governor/v1
+id: prompt-injection-local
+name: Prompt Injection Local Rule
+status: enabled
+source: custom
+engine: rule
+description: Detect prompt-injection override phrases in prompt-bearing files.
+rule:
+  target: file_content
+  detectors:
+    - id: ignore-previous
+      kind: contains
+      pattern: ignore previous instructions
+      title: Prompt override phrase detected
+      category: prompt_injection
+      severity: high
+      confidence: 0.75
+      max_matches: 5
+      remediation: Reject prompt content that attempts to override system instructions.
+scope:
+  include_globs:
+    - "**/*.md"
+    - "**/*.txt"
 ```
 
 Behavior:
