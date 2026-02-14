@@ -44,6 +44,8 @@ func Execute(args []string) error {
 		return runChecks(args[1:])
 	case "init":
 		return runInit(args[1:])
+	case "clear":
+		return runClear(args[1:])
 	case "version", "--version", "-v":
 		fmt.Println("governor " + version.Version)
 		return nil
@@ -1776,6 +1778,95 @@ func isInteractiveTerminal() bool {
 		isatty.IsTerminal(os.Stdin.Fd())
 }
 
+func runClear(args []string) error {
+	keep := 0
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--without-last" || arg == "-without-last" {
+			keep = 1
+			if i+1 < len(args) {
+				n := 0
+				valid := true
+				for _, c := range args[i+1] {
+					if c < '0' || c > '9' {
+						valid = false
+						break
+					}
+					n = n*10 + int(c-'0')
+				}
+				if valid && len(args[i+1]) > 0 {
+					keep = n
+					i++
+				}
+			}
+		} else {
+			return fmt.Errorf("unknown flag: %s", arg)
+		}
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	runsDir := filepath.Join(wd, ".governor", "runs")
+
+	removed, err := clearRuns(runsDir, keep)
+	if err != nil {
+		return err
+	}
+
+	if len(removed) == 0 {
+		fmt.Println("No runs to clear.")
+		return nil
+	}
+
+	for _, name := range removed {
+		fmt.Printf("  removed %s\n", name)
+	}
+	fmt.Printf("Removed %d run(s).\n", len(removed))
+	return nil
+}
+
+func clearRuns(runsDir string, keep int) ([]string, error) {
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read runs directory: %w", err)
+	}
+
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() {
+			dirs = append(dirs, e.Name())
+		}
+	}
+	if len(dirs) == 0 {
+		return nil, nil
+	}
+
+	sort.Strings(dirs)
+
+	if keep >= len(dirs) {
+		return nil, nil
+	}
+
+	toRemove := dirs
+	if keep > 0 {
+		toRemove = dirs[:len(dirs)-keep]
+	}
+
+	var removed []string
+	for _, name := range toRemove {
+		if err := os.RemoveAll(filepath.Join(runsDir, name)); err != nil {
+			return removed, fmt.Errorf("remove run %s: %w", name, err)
+		}
+		removed = append(removed, name)
+	}
+	return removed, nil
+}
+
 func printUsage() {
 	fmt.Println("Governor CLI")
 	fmt.Println("")
@@ -1785,6 +1876,10 @@ func printUsage() {
 	fmt.Println("  governor audit <path-or-zip> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
 	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable>] [flags]")
+	fmt.Println("  governor clear [--without-last [N]]")
+	fmt.Println("")
+	fmt.Println("Flags (clear):")
+	fmt.Println("  --without-last [N]  Preserve the N most recent runs (default 1 if N omitted)")
 	fmt.Println("")
 	fmt.Println("Flags (audit):")
 	fmt.Println("  --out <dir>         Output directory (default ./.governor/runs/<timestamp>)")
