@@ -56,7 +56,7 @@ func TestStageZip_PathTraversal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fw.Write([]byte("normal content"))
+	_, _ = fw.Write([]byte("normal content"))
 
 	// Add a traversal file - this uses the raw header to set the name
 	header := &zip.FileHeader{
@@ -67,10 +67,10 @@ func TestStageZip_PathTraversal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fw2.Write([]byte("evil content"))
+	_, _ = fw2.Write([]byte("evil content"))
 
-	w.Close()
-	f.Close()
+	_ = w.Close()
+	_ = f.Close()
 
 	// Staging should fail or skip the traversal entry
 	out := t.TempDir()
@@ -104,7 +104,7 @@ func TestStageZip_SymlinkEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fw.Write([]byte("normal content"))
+	_, _ = fw.Write([]byte("normal content"))
 
 	// Symlink entry
 	header := &zip.FileHeader{
@@ -115,10 +115,10 @@ func TestStageZip_SymlinkEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fw2.Write([]byte("/etc/passwd"))
+	_, _ = fw2.Write([]byte("/etc/passwd"))
 
-	w.Close()
-	f.Close()
+	_ = w.Close()
+	_ = f.Close()
 
 	out := t.TempDir()
 	res, err := Stage(StageOptions{
@@ -145,9 +145,9 @@ func TestStageZip_ZeroByteBudget(t *testing.T) {
 	}
 	w := zip.NewWriter(f)
 	fw, _ := w.Create("file.txt")
-	fw.Write([]byte("content"))
-	w.Close()
-	f.Close()
+	_, _ = fw.Write([]byte("content"))
+	_ = w.Close()
+	_ = f.Close()
 
 	_, err = Stage(StageOptions{
 		InputPath: zipPath,
@@ -171,10 +171,10 @@ func TestStageZip_ManyEntries(t *testing.T) {
 	// Create more entries than maxFiles * zipEntryLimitMultiplier allows
 	for i := 0; i < 100; i++ {
 		fw, _ := w.Create("file" + string(rune('a'+i%26)) + ".txt")
-		fw.Write([]byte("content"))
+		_, _ = fw.Write([]byte("content"))
 	}
-	w.Close()
-	f.Close()
+	_ = w.Close()
+	_ = f.Close()
 
 	_, err = Stage(StageOptions{
 		InputPath: zipPath,
@@ -194,8 +194,8 @@ func TestStageZip_EmptyZip(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := zip.NewWriter(f)
-	w.Close()
-	f.Close()
+	_ = w.Close()
+	_ = f.Close()
 
 	out := t.TempDir()
 	res, err := Stage(StageOptions{

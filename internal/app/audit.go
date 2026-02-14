@@ -309,7 +309,7 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 	if strings.TrimSpace(opts.BaselinePath) != "" {
 		diffPath, diffErr := writeBaselineDiff(opts.BaselinePath, report, runDir)
 		if diffErr != nil {
-			runWarnings = append(runWarnings, fmt.Sprintf("baseline diff: %v", diffErr))
+			report.Errors = append(report.Errors, fmt.Sprintf("baseline diff: %v", diffErr))
 		} else {
 			paths.DiffPath = diffPath
 		}

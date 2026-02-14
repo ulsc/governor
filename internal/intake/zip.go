@@ -25,7 +25,7 @@ func stageZipToWorkspace(zipPath string, destDir string, manifest *model.InputMa
 	if err != nil {
 		return fmt.Errorf("open zip: %w", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	destAbs, err := filepath.Abs(destDir)
 	if err != nil {
@@ -149,7 +149,7 @@ func extractZipFile(destAbs string, f *zip.File, manifest *model.InputManifest, 
 	if err != nil {
 		return fmt.Errorf("open zip entry %s: %w", f.Name, err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	copied, err := copyReaderToPathWithLimit(rc, targetAbs, maxBytes-manifest.IncludedBytes)
 	if err != nil {

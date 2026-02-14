@@ -263,7 +263,7 @@ func doOpenAIHTTPRequestWithRetry(
 		}
 
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return nil, resp.StatusCode, fmt.Errorf("read ai response: %w", err)
 		}

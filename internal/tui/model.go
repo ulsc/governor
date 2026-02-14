@@ -22,8 +22,7 @@ var (
 	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	runningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("45"))
 	idleStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
-	boldStyle    = lipgloss.NewStyle().Bold(true)
+	dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
 )
 
 type workerState struct {
@@ -271,7 +270,7 @@ func (m uiModel) View() string {
 				if strings.TrimSpace(line.Track) != "" {
 					prefix += " " + m.render(dimStyle, line.Track)
 				}
-				rendered := prefix + " " + line.Text
+				var rendered string
 				switch strings.ToLower(strings.TrimSpace(line.Severity)) {
 				case "error":
 					rendered = prefix + " " + m.render(errorStyle, line.Text)

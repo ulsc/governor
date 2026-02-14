@@ -364,7 +364,7 @@ func copyFileWithLimit(srcPath string, dstPath string, byteBudget int64, expecte
 	if err != nil {
 		return 0, fmt.Errorf("open source file %s: %w", srcPath, err)
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	opened, err := src.Stat()
 	if err != nil {
@@ -395,7 +395,7 @@ func copyReaderToPathWithLimit(src io.Reader, dstPath string, byteBudget int64) 
 	if err != nil {
 		return 0, fmt.Errorf("create workspace file %s: %w", dstPath, err)
 	}
-	defer dst.Close()
+	defer func() { _ = dst.Close() }()
 
 	limited := &io.LimitedReader{R: src, N: byteBudget + 1}
 	n, err := io.Copy(dst, limited)

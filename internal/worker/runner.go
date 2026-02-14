@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"governor/internal/ai"
@@ -207,7 +205,7 @@ func runOneTrack(parent context.Context, workspace string, manifest model.InputM
 
 	redactedLog := execRes.logBytes
 	if writeErr := safefile.WriteFileAtomic(logPath, redactedLog, 0o600); writeErr != nil {
-		redactedLog = append(redactedLog, []byte("\n[governor] failed to write worker log: "+writeErr.Error())...)
+		fmt.Fprintf(os.Stderr, "[governor] failed to write worker log %s: %v\n", logPath, writeErr)
 	}
 
 	payload := execRes.payload
@@ -293,7 +291,7 @@ func runRuleTrack(
 		logBytes = []byte("[governor] deterministic rule engine produced no log output\n")
 	}
 	if writeErr := safefile.WriteFileAtomic(logPath, logBytes, 0o600); writeErr != nil {
-		logBytes = append(logBytes, []byte("\n[governor] failed to write worker log: "+writeErr.Error())...)
+		fmt.Fprintf(os.Stderr, "[governor] failed to write worker log %s: %v\n", logPath, writeErr)
 	}
 
 	payload := redactWorkerOutput(execRes.payload)
@@ -872,18 +870,6 @@ func emitWorkerHeartbeats(ctx context.Context, sink progress.Sink, track string,
 			})
 		}
 	}
-}
-
-func killCommandProcessGroup(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	pid := cmd.Process.Pid
-	if pid <= 0 {
-		return
-	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	_ = cmd.Process.Kill()
 }
 
 func writeSchema(outDir string) (string, error) {

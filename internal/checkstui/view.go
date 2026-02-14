@@ -19,7 +19,6 @@ var (
 	successStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	searchModeStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81"))
 	dimStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
-	helpKeyStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
 	criticalStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 	highStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
 	mediumStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
@@ -211,11 +210,12 @@ func (m uiModel) View() string {
 
 	// Status / help bar
 	b.WriteString("\n")
-	if m.mode == modeSearch {
+	switch m.mode {
+	case modeSearch:
 		b.WriteString(searchModeStyle.Render(m.statusLine()))
-	} else if m.mode == modeConfirmStatus || m.mode == modeDuplicateID || m.mode == modeDuplicateName {
+	case modeConfirmStatus, modeDuplicateID, modeDuplicateName:
 		b.WriteString(warningStyle.Render(m.statusLine()))
-	} else {
+	default:
 		style := mutedStyle
 		if strings.Contains(strings.ToLower(m.message), "failed") {
 			style = errorStyle
@@ -291,19 +291,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func styleForStatus(status checks.Status) lipgloss.Style {
-	switch status {
-	case checks.StatusEnabled:
-		return successStyle
-	case checks.StatusDraft:
-		return warningStyle
-	case checks.StatusDisabled:
-		return mutedStyle
-	default:
-		return infoStyle
-	}
 }
 
 func truncate(s string, maxLen int) string {

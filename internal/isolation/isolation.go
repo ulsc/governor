@@ -984,12 +984,10 @@ func isLikelyLocalBaseURL(raw string) bool {
 	return strings.Contains(raw, "127.0.0.1") || strings.Contains(raw, "localhost")
 }
 
-// Backward compatibility wrappers.
-func resolveCodexHome(raw string) (string, error) { return resolveAIHome(raw) }
+// Backward compatibility wrapper.
 func stageSubscriptionBundle(codexHome string, seedDir string) (string, error) {
 	return stageAccountBundle(codexHome, seedDir)
 }
-func hasSubscriptionAuth(codexHome string) bool { return hasAccountAuth(codexHome) }
 
 func copyRegularFileNoSymlink(src string, dst string) error {
 	info, err := os.Lstat(src)
@@ -1007,7 +1005,7 @@ func copyRegularFileNoSymlink(src string, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
@@ -1016,7 +1014,7 @@ func copyRegularFileNoSymlink(src string, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	if _, err := io.Copy(out, in); err != nil {
 		return err

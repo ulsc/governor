@@ -408,7 +408,7 @@ func readRegularFileBounded(path string, remaining int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	limited := io.LimitReader(f, int64(remaining)+1)
 	b, err := io.ReadAll(limited)

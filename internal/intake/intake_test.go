@@ -248,10 +248,10 @@ func TestStageFolder_SkipsOversizedFile(t *testing.T) {
 		buf[i] = 'x'
 	}
 	if _, err := f.Write(buf); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	out := t.TempDir()
 	res, err := Stage(StageOptions{

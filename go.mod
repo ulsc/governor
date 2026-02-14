@@ -1,7 +1,7 @@
 module governor
 
-go 1.22
-toolchain go1.22.0
+go 1.24
+toolchain go1.25.7
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.0

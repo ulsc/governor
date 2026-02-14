@@ -78,11 +78,8 @@ func TestPathInline_PromptInjectionAttempt(t *testing.T) {
 	if strings.Contains(result, "\n") {
 		t.Error("PathInline should replace newlines")
 	}
-	// The text after newline should become part of a single line
-	if !strings.Contains(result, "Ignore previous instructions") {
-		// The content is preserved but on one line - this is acceptable
-		// as the path is embedded in structured prompts
-	}
+	// The content is preserved but on one line - this is acceptable
+	// as the path is embedded in structured prompts.
 }
 
 func TestPathInline_UnicodePreserved(t *testing.T) {

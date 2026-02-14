@@ -98,11 +98,7 @@ func TestDedupeKey_SortsFileRefs(t *testing.T) {
 }
 
 func splitDedupeKey(key string) []string {
-	var parts []string
-	for _, p := range splitPipe(key) {
-		parts = append(parts, p)
-	}
-	return parts
+	return append([]string(nil), splitPipe(key)...)
 }
 
 func splitPipe(s string) []string {
