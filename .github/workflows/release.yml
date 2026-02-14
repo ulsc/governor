@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
@@ -27,8 +27,16 @@ jobs:
             goarch: amd64
             ext: ''
             archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            ext: ''
+            archive: tar.gz
           - goos: darwin
             goarch: arm64
+            ext: ''
+            archive: tar.gz
+          - goos: darwin
+            goarch: amd64
             ext: ''
             archive: tar.gz
           - goos: windows
@@ -54,7 +62,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
-          go-version: '1.25.1'
+          go-version: '1.25.7'
           cache: true
 
       - name: Build binary
@@ -67,9 +75,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          BINARY="governor_${TAG_NAME}_${GOOS}_${GOARCH}${EXT}"
-          go build -mod=readonly -o "dist/${BINARY}" .
-          echo "BINARY=${BINARY}" >> "$GITHUB_ENV"
+          go build -mod=readonly -trimpath \
+            -ldflags "-s -w -X governor/internal/version.Version=${TAG_NAME}" \
+            -o "dist/governor${EXT}" .
 
       - name: Package artifact
         env:
@@ -77,6 +85,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           ARCHIVE_TYPE: ${{ matrix.archive }}
+          EXT: ${{ matrix.ext }}
         run: |
           set -euo pipefail
           ARCHIVE_BASE="governor_${TAG_NAME}_${GOOS}_${GOARCH}"
@@ -84,13 +93,13 @@ jobs:
             ARCHIVE_FILE="${ARCHIVE_BASE}.zip"
             (
               cd dist
-              zip -q "${ARCHIVE_FILE}" "${BINARY}"
+              zip -q "${ARCHIVE_FILE}" "governor${EXT}"
             )
           else
             ARCHIVE_FILE="${ARCHIVE_BASE}.tar.gz"
             (
               cd dist
-              tar -czf "${ARCHIVE_FILE}" "${BINARY}"
+              tar -czf "${ARCHIVE_FILE}" "governor${EXT}"
             )
           fi
           echo "ARCHIVE_FILE=${ARCHIVE_FILE}" >> "$GITHUB_ENV"
@@ -113,6 +122,49 @@ jobs:
             dist/${{ env.CHECKSUM_FILE }}
           if-no-files-found: error
 
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-24.04
+    needs: build-artifacts
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) \
+            -exec cp {} release/ \;
+
+          # Generate combined checksums file
+          cd release
+          cat *.sha256 > "checksums_${TAG_NAME}.txt"
+          ls -la
+
+      - name: Copy install script
+        run: cp install.sh release/install.sh
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "${TAG_NAME}" \
+            --title "Governor ${TAG_NAME}" \
+            --generate-notes \
+            release/*
 
   attest-artifacts:
     name: Attest ${{ matrix.goos }}-${{ matrix.goarch }}
@@ -129,8 +181,14 @@ jobs:
           - goos: linux
             goarch: amd64
             archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            archive: tar.gz
           - goos: darwin
             goarch: arm64
+            archive: tar.gz
+          - goos: darwin
+            goarch: amd64
             archive: tar.gz
           - goos: windows
             goarch: amd64
@@ -162,4 +220,4 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
-          subject-path: dist/${{ env.ARCHIVE_FILE }}/${{ env.ARCHIVE_FILE }}
+          subject-path: dist/${{ env.ARCHIVE_FILE }}
