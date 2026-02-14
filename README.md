@@ -61,10 +61,11 @@ Governor is built for organizations that receive many source folders/zips and ne
 
 3. Execution:
 - Runs checks with bounded concurrency (`--workers`, default `3`).
-- `engine: ai` checks execute with sandboxed Codex mode by default (`--execution-mode sandboxed`).
+- `engine: ai` checks execute via the configured AI profile/provider (`--ai-profile`, `--ai-provider`).
+- For `codex-cli` provider, sandbox behavior is controlled by `--execution-mode` and `--ai-sandbox`.
 - `engine: rule` checks execute deterministically without model calls.
 - Worker subprocesses run with a constrained environment allowlist.
-- Codex binary is resolved and attested only when selected checks require the AI engine.
+- AI binaries are resolved and attested only when selected checks require `codex-cli`.
 
 4. Reporting:
 - Merges and de-duplicates findings.
@@ -97,7 +98,7 @@ make build
 ### Requirements
 
 - Go `1.22+`
-- `codex` CLI in `PATH`
+- `codex` CLI in `PATH` when using `--ai-provider codex-cli`
 
 ### Build from source
 
@@ -164,8 +165,15 @@ governor audit <path-or-zip> [flags]
 ### Important flags
 
 - `--workers <1-3>`: max concurrent worker processes (default `3`)
+- `--ai-profile <name>`: AI profile (default `codex`)
+- `--ai-provider <name>`: provider override (`codex-cli|openai-compatible`)
+- `--ai-model <id>`: model override
+- `--ai-auth-mode <mode>`: auth override (`auto|account|api-key`)
+- `--ai-base-url <url>`: base URL override for openai-compatible providers
+- `--ai-api-key-env <name>`: API key env var override
+- `--ai-bin <path>`: AI CLI executable path for `codex-cli` provider
 - `--execution-mode <sandboxed|host>`: worker execution mode (default `sandboxed`)
-- `--codex-sandbox <mode>`: Codex sandbox for sandboxed mode (`read-only` default)
+- `--ai-sandbox <mode>`: sandbox mode for sandboxed execution (`read-only` default)
 - `--checks-dir <dir>`: custom checks directory override
   - Read defaults (when omitted): `./.governor/checks` + `~/.governor/checks` (repo first)
   - Write defaults for `checks add`/`checks extract` (when omitted): `./.governor/checks` in repo, otherwise `~/.governor/checks`
@@ -210,33 +218,40 @@ Key behavior:
 - Input is mounted read-only (`/input`).
 - Output is mounted read/write at a fresh host output directory (`--out` or default `./.governor/runs/<timestamp>`) and mapped to `/output` in-container.
 - Container root filesystem is read-only with restricted capabilities.
-- Worker execution inside container defaults to host mode (`--execution-mode host`) for reliable repository access with current Codex sandbox behavior.
+- Worker execution inside container defaults to host mode (`--execution-mode host`) for reliable repository access.
 - If you explicitly choose sandboxed execution, Governor can auto-rerun sandbox-denied tracks in host mode.
 - CLI prints final artifact paths using host filesystem paths.
 
-Subscription auth (no API key):
-- `--auth-mode subscription` (default) requires host Codex subscription state.
-- Governor stages a minimal read-only auth bundle from `~/.codex` (`auth.json`) into an ephemeral directory and mounts it into the container.
-- No write-back is performed to host `~/.codex`.
+Account auth (no API key):
+- `--auth-mode account` (default for `codex-cli`) uses host account state from `~/.codex/auth.json`.
+- Governor stages a minimal read-only auth bundle from `--ai-home` into an ephemeral directory and mounts it into the container.
+- No write-back is performed to host `--ai-home`.
 
 Useful flags:
-- `--auth-mode auto|subscription|api-key`
-- `--codex-home ~/.codex`
+- `--auth-mode auto|account|api-key`
+- `--ai-home ~/.codex`
+- `--ai-profile <name>`
+- `--ai-provider codex-cli|openai-compatible`
+- `--ai-model <id>`
+- `--ai-auth-mode auto|account|api-key`
+- `--ai-base-url <url>`
+- `--ai-api-key-env <name>`
+- `--ai-bin <path>`
 - `--runtime auto|docker|podman`
 - `--image <runner-image>`
 - `--pull always|if-missing|never`
 - `--network unrestricted|none`
 - `--execution-mode sandboxed|host`
-- `--codex-sandbox read-only|workspace-write|danger-full-access`
+- `--ai-sandbox read-only|workspace-write|danger-full-access`
 - `--clean-image`
 - `--keep-workspace-error`
 
 Notes:
 - `--out` is optional; default is `./.governor/runs/<timestamp>`.
-- Isolated defaults are hardened while remaining practical: `--network none`, `--pull never`, `--auth-mode subscription`, `--execution-mode host`.
+- Isolated defaults are hardened while remaining practical: `--network none`, `--pull never`, `--auth-mode account`, `--execution-mode host`.
 - `--network unrestricted` allows normal outbound network for model/tool calls; `none` is fully offline.
-- Isolated preflight now includes both endpoint reachability and a short Codex exec probe. The Codex probe is authoritative for runtime health.
-- Worker tracks retry Codex transport failures classified as retryable (for example stream/network disconnects) and emit a fallback non-empty JSON output when retries are exhausted.
+- For `codex-cli`, isolated preflight includes endpoint reachability and a short CLI exec probe.
+- Worker tracks retryable AI transport failures (for example stream/network disconnects) and emits a fallback non-empty JSON output when retries are exhausted.
 - If `--pull` is `always` or `if-missing`, `--image` must be digest pinned (`name@sha256:...`).
 - Container runtime/image caches are external to Governor output and may persist unless cleaned (`--clean-image`).
 - If you do not have a published runner image, use `Dockerfile.isolate-runner` with `make build-isolation-image`.
@@ -246,8 +261,8 @@ Notes:
 Common diagnostic labels in worker/preflight errors:
 
 - `[infra.tls_trust]`: Runner image CA trust is missing or broken. Rebuild image from `Dockerfile.isolate-runner` and ensure `ca-certificates` are installed.
-- `[auth.subscription]`: Subscription/API auth is unavailable in the isolated environment. Re-run `codex login` on host or use `--auth-mode api-key`.
-- `[infra.network]`: Network/DNS/connectivity issue to Codex endpoints.
+- `[auth.account]`: Account/API auth is unavailable in the isolated environment. Re-run `codex login` on host or use `--auth-mode api-key`.
+- `[infra.network]`: Network/DNS/connectivity issue to AI endpoints.
 - `[stream.transient]`: Stream dropped mid-response; Governor retries and may fall back to non-empty JSON output.
 
 ## Checks Command
@@ -525,7 +540,7 @@ Git hygiene:
 - Symlinks are skipped in intake and not copied into the worker workspace.
 - Large inputs are constrained by `--max-files` and `--max-bytes` on the staged workspace.
 - Bulky/non-source paths are excluded (`node_modules`, `vendor`, `.git`, etc.).
-- Non-default `--codex-bin` requires `--allow-custom-codex-bin`.
+- Non-default `--ai-bin` requires `--allow-custom-ai-bin`.
 - Run directories default to `0700`; report/log/check artifacts default to `0600`.
 - Worker/report text is redacted for common secret patterns before persistence.
 

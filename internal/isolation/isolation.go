@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"governor/internal/ai"
 	"governor/internal/checks"
 	"governor/internal/model"
 	reportpkg "governor/internal/report"
@@ -22,12 +23,12 @@ import (
 
 const (
 	DefaultImage       = "governor-runner:local"
-	defaultCodexHome   = "~/.codex"
+	defaultAIHome      = "~/.codex"
 	defaultWorkers     = 3
 	defaultMaxFiles    = 20000
 	defaultMaxBytes    = 250 * 1024 * 1024
 	defaultTimeout     = 4 * time.Minute
-	preflightCodexTO   = 20 * time.Second
+	preflightAITO      = 20 * time.Second
 	defaultPathInImage = "/usr/bin:/bin:/usr/sbin:/sbin"
 	defaultExecMode    = "host"
 	defaultSandboxMode = "read-only"
@@ -60,7 +61,8 @@ type AuthMode string
 
 const (
 	AuthAuto         AuthMode = "auto"
-	AuthSubscription AuthMode = "subscription"
+	AuthAccount      AuthMode = "account"
+	AuthSubscription AuthMode = AuthAccount
 	AuthAPIKey       AuthMode = "api-key"
 )
 
@@ -76,6 +78,8 @@ type AuditOptions struct {
 	CleanImage    bool
 
 	AuthMode  AuthMode
+	AIRuntime ai.Runtime
+	AIHome    string
 	CodexHome string
 
 	Workers  int
@@ -150,13 +154,26 @@ func RunAudit(ctx context.Context, opts AuditOptions) error {
 	}()
 
 	hostEnv := envToMap(os.Environ())
-	codexRequired, selectionWarnings, err := isolateSelectionRequiresAI(opts)
+	aiRequired, selectionWarnings, err := isolateSelectionRequiresAI(opts)
 	if err != nil {
 		return err
 	}
+	runtimeCfg := opts.AIRuntime
+	if strings.TrimSpace(runtimeCfg.Provider) == "" {
+		runtimeCfg, err = ai.ResolveRuntime(ai.ResolveOptions{
+			Profile:       "codex",
+			ExecutionMode: opts.ExecutionMode,
+			SandboxMode:   opts.SandboxMode,
+			AccountHome:   opts.AIHome,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
 	authMode := AuthAuto
-	if codexRequired {
-		authMode, err = resolveAuthMode(opts.AuthMode, opts.CodexHome, hostEnv)
+	if aiRequired {
+		authMode, err = resolveAuthMode(opts.AuthMode, runtimeCfg, opts.AIHome, hostEnv)
 		if err != nil {
 			return err
 		}
@@ -169,21 +186,22 @@ func RunAudit(ctx context.Context, opts AuditOptions) error {
 	defer func() { _ = os.RemoveAll(tmpRoot) }()
 
 	var seedDir string
-	if codexRequired && authMode == AuthSubscription {
-		codexHome, err := resolveCodexHome(opts.CodexHome)
+	if aiRequired && authMode == AuthAccount && runtimeCfg.UsesCLI() {
+		aiHome, err := resolveAIHome(opts.AIHome)
 		if err != nil {
 			return err
 		}
-		seedDir, err = stageSubscriptionBundle(codexHome, filepath.Join(tmpRoot, "codex-seed"))
+		seedDir, err = stageAccountBundle(aiHome, filepath.Join(tmpRoot, "ai-seed"))
 		if err != nil {
 			return err
 		}
 	}
 
-	containerEnv := buildContainerEnv(hostEnv, authMode, codexRequired)
-	preflight := runPreflight(ctx, runtimeBin, opts, authMode, seedDir, containerEnv, codexRequired)
+	containerEnv := buildContainerEnv(hostEnv, runtimeCfg, authMode, aiRequired)
+	preflight := runPreflight(ctx, runtimeBin, opts, runtimeCfg, authMode, seedDir, containerEnv, aiRequired)
 	preflight.Warnings = append(preflight.Warnings, selectionWarnings...)
 	emitPreflight(preflight)
+	opts.AIRuntime = runtimeCfg
 	govArgs := buildInnerGovernorArgs(opts, checksAbs != "")
 	runArgs := buildContainerRunArgs(opts, inputAbs, outAbs, checksAbs, seedDir, envNames(containerEnv), govArgs)
 
@@ -227,29 +245,30 @@ func runPreflight(
 	ctx context.Context,
 	runtimeBin string,
 	opts AuditOptions,
+	runtimeCfg ai.Runtime,
 	authMode AuthMode,
 	seedDir string,
 	containerEnv []string,
-	codexRequired bool,
+	aiRequired bool,
 ) preflightResult {
 	result := preflightResult{
 		Notes: []string{
-			fmt.Sprintf("isolate preflight: codex-required=%t network=%s", codexRequired, opts.NetworkPolicy),
+			fmt.Sprintf("isolate preflight: ai-required=%t network=%s provider=%s", aiRequired, opts.NetworkPolicy, runtimeCfg.Provider),
 		},
 		Warnings: []string{},
 	}
-	if !codexRequired {
-		result.Notes = append(result.Notes, "isolate preflight: selected checks are deterministic only; skipping Codex auth/probe")
+	if !aiRequired {
+		result.Notes = append(result.Notes, "isolate preflight: selected checks are deterministic only; skipping AI auth/probe")
 		return result
 	}
 	result.Notes = append(result.Notes, fmt.Sprintf("isolate preflight: auth-mode=%s", authMode))
 
 	switch authMode {
-	case AuthSubscription:
+	case AuthAccount:
 		if seedDir == "" {
-			result.Warnings = append(result.Warnings, "isolate preflight: subscription auth selected but no staged auth bundle was mounted")
+			result.Warnings = append(result.Warnings, "isolate preflight: account auth selected but no staged auth bundle was mounted")
 		} else if _, err := os.Stat(filepath.Join(seedDir, "auth.json")); err != nil {
-			result.Warnings = append(result.Warnings, "isolate preflight: staged subscription auth.json is unavailable")
+			result.Warnings = append(result.Warnings, "isolate preflight: staged account auth.json is unavailable")
 		}
 	case AuthAPIKey:
 		result.Notes = append(result.Notes, "isolate preflight: using API key environment forwarding")
@@ -259,6 +278,11 @@ func runPreflight(
 
 	if opts.NetworkPolicy == NetworkNone {
 		result.Warnings = append(result.Warnings, "isolate preflight: network policy is none; AI egress is disabled by policy")
+		return result
+	}
+
+	if !runtimeCfg.UsesCLI() {
+		result.Notes = append(result.Notes, "isolate preflight: non-CLI AI provider selected; skipping CLI exec probe")
 		return result
 	}
 
@@ -275,7 +299,7 @@ func runPreflight(
 		result.Warnings = append(result.Warnings, msg)
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, preflightCodexTO)
+	probeCtx, cancel := context.WithTimeout(ctx, preflightAITO)
 	defer cancel()
 	codexProbe, err := probeCodexExec(probeCtx, runtimeBin, opts, seedDir, containerEnv)
 	if err != nil {
@@ -376,7 +400,7 @@ func classifyCodexProbeFailure(probe codexProbeResult) (label string, reason str
 		"401",
 		"403",
 	) {
-		return "auth.subscription", "authentication is unavailable for Codex in isolated mode"
+		return "auth.account", "authentication is unavailable for AI provider in isolated mode"
 	}
 	if hasAnyPattern(text,
 		"temporary failure in name resolution",
@@ -406,7 +430,7 @@ func probeCodexEndpoint(
 	containerEnv []string,
 ) (endpointProbeResult, error) {
 	script := `set -eu
-if [ -d /codex-seed ]; then cp -R /codex-seed/. /codex-home/; chmod -R go-rwx /codex-home || true; fi
+if [ -d /ai-seed ]; then cp -R /ai-seed/. /ai-home/; chmod -R go-rwx /ai-home || true; fi
 node -e '
 const dns = require("dns").promises;
 const https = require("https");
@@ -481,7 +505,7 @@ func probeCodexExec(
 	containerEnv []string,
 ) (codexProbeResult, error) {
 	script := `set -eu
-if [ -d /codex-seed ]; then cp -R /codex-seed/. /codex-home/; chmod -R go-rwx /codex-home || true; fi
+if [ -d /ai-seed ]; then cp -R /ai-seed/. /ai-home/; chmod -R go-rwx /ai-home || true; fi
 ca_bundle=0
 if [ -f /etc/ssl/certs/ca-certificates.crt ] || [ -f /etc/ssl/cert.pem ]; then
   ca_bundle=1
@@ -568,12 +592,12 @@ func buildProbeContainerRunArgs(opts AuditOptions, seedDir string, envVars []str
 		"--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
 		"--tmpfs", "/home/governor:rw,noexec,nosuid,nodev,size=64m,uid=65532,gid=65532,mode=700",
 		"--tmpfs", "/work:rw,noexec,nosuid,nodev,size=16m,uid=65532,gid=65532,mode=700",
-		"--tmpfs", "/codex-home:rw,nosuid,nodev,size=32m,uid=65532,gid=65532,mode=700",
+		"--tmpfs", "/ai-home:rw,nosuid,nodev,size=32m,uid=65532,gid=65532,mode=700",
 		"--entrypoint", "sh",
 		"-w", "/work",
 	)
 	if seedDir != "" {
-		args = append(args, "-v", fmt.Sprintf("%s:/codex-seed:ro", seedDir))
+		args = append(args, "-v", fmt.Sprintf("%s:/ai-seed:ro", seedDir))
 	}
 	if opts.NetworkPolicy == NetworkNone {
 		args = append(args, "--network", "none")
@@ -655,10 +679,13 @@ func normalizeOptions(opts AuditOptions) AuditOptions {
 		opts.PullPolicy = PullNever
 	}
 	if opts.AuthMode == "" {
-		opts.AuthMode = AuthSubscription
+		opts.AuthMode = AuthAccount
 	}
-	if strings.TrimSpace(opts.CodexHome) == "" {
-		opts.CodexHome = defaultCodexHome
+	if strings.TrimSpace(opts.AIHome) == "" {
+		opts.AIHome = strings.TrimSpace(opts.CodexHome)
+	}
+	if strings.TrimSpace(opts.AIHome) == "" {
+		opts.AIHome = defaultAIHome
 	}
 	if opts.Workers < 1 {
 		opts.Workers = defaultWorkers
@@ -713,9 +740,9 @@ func validateOptions(opts AuditOptions) error {
 		return errors.New("--pull must be always, if-missing, or never")
 	}
 	switch opts.AuthMode {
-	case AuthAuto, AuthSubscription, AuthAPIKey:
+	case AuthAuto, AuthAccount, AuthAPIKey:
 	default:
-		return errors.New("--auth-mode must be auto, subscription, or api-key")
+		return errors.New("--auth-mode must be auto, account, or api-key")
 	}
 	switch normalizeExecutionMode(opts.ExecutionMode) {
 	case "sandboxed", "host":
@@ -726,7 +753,7 @@ func validateOptions(opts AuditOptions) error {
 		switch normalizeSandboxMode(opts.SandboxMode) {
 		case "read-only", "workspace-write", "danger-full-access":
 		default:
-			return errors.New("--codex-sandbox must be read-only, workspace-write, or danger-full-access")
+			return errors.New("--ai-sandbox must be read-only, workspace-write, or danger-full-access")
 		}
 	}
 	if err := validateImagePolicy(opts.Image, opts.PullPolicy); err != nil {
@@ -840,41 +867,52 @@ func removeImage(ctx context.Context, runtimeBin string, image string) error {
 	return cmd.Run()
 }
 
-func resolveAuthMode(mode AuthMode, codexHomeRaw string, env map[string]string) (AuthMode, error) {
+func resolveAuthMode(mode AuthMode, runtimeCfg ai.Runtime, aiHomeRaw string, env map[string]string) (AuthMode, error) {
 	switch mode {
-	case AuthSubscription:
-		codexHome, err := resolveCodexHome(codexHomeRaw)
+	case AuthAccount:
+		if !runtimeCfg.UsesCLI() {
+			return "", fmt.Errorf("account auth is only supported for provider %q", ai.ProviderCodexCLI)
+		}
+		aiHome, err := resolveAIHome(aiHomeRaw)
 		if err != nil {
 			return "", err
 		}
-		if !hasSubscriptionAuth(codexHome) {
-			return "", fmt.Errorf("subscription auth selected but %s/auth.json not found", codexHome)
+		if !hasAccountAuth(aiHome) {
+			return "", fmt.Errorf("account auth selected but %s/auth.json not found", aiHome)
 		}
-		return AuthSubscription, nil
+		return AuthAccount, nil
 	case AuthAPIKey:
-		if !hasAPIKeyAuth(env) {
-			return "", fmt.Errorf("api-key auth selected but no API key env found")
+		if !hasAPIKeyAuth(runtimeCfg, env) {
+			return "", fmt.Errorf("api-key auth selected but %s is not set", strings.TrimSpace(runtimeCfg.APIKeyEnv))
 		}
 		return AuthAPIKey, nil
 	case AuthAuto:
-		codexHome, err := resolveCodexHome(codexHomeRaw)
-		if err != nil {
-			return "", err
+		if runtimeCfg.UsesCLI() {
+			aiHome, err := resolveAIHome(aiHomeRaw)
+			if err != nil {
+				return "", err
+			}
+			if hasAccountAuth(aiHome) {
+				return AuthAccount, nil
+			}
 		}
-		if hasSubscriptionAuth(codexHome) {
-			return AuthSubscription, nil
-		}
-		if hasAPIKeyAuth(env) {
+		if hasAPIKeyAuth(runtimeCfg, env) {
 			return AuthAPIKey, nil
 		}
-		return "", fmt.Errorf("no auth available for isolated run; run codex login or set API key env")
+		if runtimeCfg.UsesOpenAICompatibleAPI() && isLikelyLocalBaseURL(runtimeCfg.BaseURL) {
+			return AuthAuto, nil
+		}
+		if runtimeCfg.UsesCLI() {
+			return "", fmt.Errorf("no auth available for isolated run; run codex login or set API key env")
+		}
+		return "", fmt.Errorf("no auth available for isolated run; set %s or configure local openai-compatible endpoint", runtimeCfg.APIKeyEnv)
 	default:
 		return "", fmt.Errorf("unsupported auth mode %q", mode)
 	}
 }
 
-func hasSubscriptionAuth(codexHome string) bool {
-	path := filepath.Join(codexHome, "auth.json")
+func hasAccountAuth(aiHome string) bool {
+	path := filepath.Join(aiHome, "auth.json")
 	info, err := os.Stat(path)
 	if err != nil {
 		return false
@@ -882,8 +920,13 @@ func hasSubscriptionAuth(codexHome string) bool {
 	return info.Mode().IsRegular() && info.Size() > 0
 }
 
-func hasAPIKeyAuth(env map[string]string) bool {
-	for _, key := range []string{"OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_API_KEY"} {
+func hasAPIKeyAuth(runtimeCfg ai.Runtime, env map[string]string) bool {
+	if key := strings.TrimSpace(runtimeCfg.APIKeyEnv); key != "" {
+		if strings.TrimSpace(env[key]) != "" {
+			return true
+		}
+	}
+	for _, key := range []string{"AI_API_KEY", "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_API_KEY"} {
 		if strings.TrimSpace(env[key]) != "" {
 			return true
 		}
@@ -891,10 +934,10 @@ func hasAPIKeyAuth(env map[string]string) bool {
 	return false
 }
 
-func resolveCodexHome(raw string) (string, error) {
+func resolveAIHome(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		raw = defaultCodexHome
+		raw = defaultAIHome
 	}
 	if strings.HasPrefix(raw, "~") {
 		home, err := os.UserHomeDir()
@@ -912,25 +955,40 @@ func resolveCodexHome(raw string) (string, error) {
 	}
 	abs, err := filepath.Abs(raw)
 	if err != nil {
-		return "", fmt.Errorf("resolve codex home: %w", err)
+		return "", fmt.Errorf("resolve ai home: %w", err)
 	}
 	return abs, nil
 }
 
-func stageSubscriptionBundle(codexHome string, seedDir string) (string, error) {
+func stageAccountBundle(aiHome string, seedDir string) (string, error) {
 	if err := os.MkdirAll(seedDir, 0o700); err != nil {
-		return "", fmt.Errorf("create codex seed dir: %w", err)
+		return "", fmt.Errorf("create ai seed dir: %w", err)
 	}
 
 	required := []string{"auth.json"}
 	for _, name := range required {
-		src := filepath.Join(codexHome, name)
+		src := filepath.Join(aiHome, name)
 		if err := copyRegularFileNoSymlink(src, filepath.Join(seedDir, name)); err != nil {
-			return "", fmt.Errorf("stage codex auth file %s: %w", name, err)
+			return "", fmt.Errorf("stage ai auth file %s: %w", name, err)
 		}
 	}
 	return seedDir, nil
 }
+
+func isLikelyLocalBaseURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	return strings.Contains(raw, "127.0.0.1") || strings.Contains(raw, "localhost")
+}
+
+// Backward compatibility wrappers.
+func resolveCodexHome(raw string) (string, error) { return resolveAIHome(raw) }
+func stageSubscriptionBundle(codexHome string, seedDir string) (string, error) {
+	return stageAccountBundle(codexHome, seedDir)
+}
+func hasSubscriptionAuth(codexHome string) bool { return hasAccountAuth(codexHome) }
 
 func copyRegularFileNoSymlink(src string, dst string) error {
 	info, err := os.Lstat(src)
@@ -965,13 +1023,21 @@ func copyRegularFileNoSymlink(src string, dst string) error {
 	return nil
 }
 
-func buildContainerEnv(hostEnv map[string]string, authMode AuthMode, codexRequired bool) []string {
+func buildContainerEnv(hostEnv map[string]string, runtimeCfg ai.Runtime, authMode AuthMode, aiRequired bool) []string {
 	keys := []string{
 		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
 		"http_proxy", "https_proxy", "no_proxy",
 	}
-	if codexRequired && authMode == AuthAPIKey {
+	if aiRequired && authMode == AuthAPIKey {
+		if strings.TrimSpace(runtimeCfg.APIKeyEnv) != "" {
+			keys = append(keys, strings.TrimSpace(runtimeCfg.APIKeyEnv))
+		}
 		keys = append(keys,
+			"AI_API_KEY",
+			"AI_BASE_URL",
+			"AI_MODEL",
+			"AI_PROVIDER",
+			"AI_PROFILE",
 			"OPENAI_API_KEY",
 			"OPENAI_BASE_URL",
 			"OPENAI_ORG_ID",
@@ -979,13 +1045,23 @@ func buildContainerEnv(hostEnv map[string]string, authMode AuthMode, codexRequir
 			"AZURE_OPENAI_API_KEY",
 			"AZURE_OPENAI_ENDPOINT",
 			"AZURE_OPENAI_API_VERSION",
+			"ANTHROPIC_API_KEY",
+			"OPENROUTER_API_KEY",
+			"MISTRAL_API_KEY",
+			"DEEPSEEK_API_KEY",
+			"MINIMAX_API_KEY",
+			"XAI_API_KEY",
+			"PERPLEXITY_API_KEY",
+			"CHATGLM_API_KEY",
+			"HUGGINGFACEHUB_API_TOKEN",
+			"HF_TOKEN",
 			"CODEX_API_KEY",
 			"CODEX_BASE_URL",
 			"CODEX_PROFILE",
 		)
 	}
 
-	out := make([]string, 0, len(keys)+4)
+	out := make([]string, 0, len(keys)+10)
 	added := map[string]struct{}{}
 	for _, key := range keys {
 		val := strings.TrimSpace(hostEnv[key])
@@ -1003,8 +1079,22 @@ func buildContainerEnv(hostEnv map[string]string, authMode AuthMode, codexRequir
 	out = append(out,
 		"PATH="+defaultPathInImage,
 		"HOME=/home/governor",
-		"CODEX_HOME=/codex-home",
 	)
+	if strings.TrimSpace(runtimeCfg.Profile) != "" {
+		out = append(out, "AI_PROFILE="+strings.TrimSpace(runtimeCfg.Profile))
+	}
+	if strings.TrimSpace(runtimeCfg.Provider) != "" {
+		out = append(out, "AI_PROVIDER="+strings.TrimSpace(runtimeCfg.Provider))
+	}
+	if strings.TrimSpace(runtimeCfg.Model) != "" {
+		out = append(out, "AI_MODEL="+strings.TrimSpace(runtimeCfg.Model))
+	}
+	if strings.TrimSpace(runtimeCfg.BaseURL) != "" {
+		out = append(out, "AI_BASE_URL="+strings.TrimSpace(runtimeCfg.BaseURL))
+	}
+	if runtimeCfg.UsesCLI() {
+		out = append(out, "AI_HOME=/ai-home", "CODEX_HOME=/ai-home")
+	}
 	sort.Strings(out)
 	return out
 }
@@ -1066,12 +1156,39 @@ func buildInnerGovernorArgs(opts AuditOptions, hasChecksMount bool) []string {
 		"--max-bytes", fmt.Sprintf("%d", opts.MaxBytes),
 		"--timeout", opts.Timeout.String(),
 	}
+	if strings.TrimSpace(opts.AIRuntime.Profile) != "" {
+		args = append(args, "--ai-profile", strings.TrimSpace(opts.AIRuntime.Profile))
+	}
+	if strings.TrimSpace(opts.AIRuntime.Provider) != "" {
+		args = append(args, "--ai-provider", strings.TrimSpace(opts.AIRuntime.Provider))
+	}
+	if strings.TrimSpace(opts.AIRuntime.Model) != "" {
+		args = append(args, "--ai-model", strings.TrimSpace(opts.AIRuntime.Model))
+	}
+	if strings.TrimSpace(opts.AIRuntime.AuthMode) != "" {
+		args = append(args, "--ai-auth-mode", strings.TrimSpace(opts.AIRuntime.AuthMode))
+	}
+	if strings.TrimSpace(opts.AIRuntime.BaseURL) != "" {
+		args = append(args, "--ai-base-url", strings.TrimSpace(opts.AIRuntime.BaseURL))
+	}
+	if strings.TrimSpace(opts.AIRuntime.APIKeyEnv) != "" {
+		args = append(args, "--ai-api-key-env", strings.TrimSpace(opts.AIRuntime.APIKeyEnv))
+	}
+	if opts.AIRuntime.UsesCLI() {
+		bin := strings.TrimSpace(opts.AIRuntime.Bin)
+		if bin == "" {
+			bin = "codex"
+		} else {
+			bin = filepath.Base(bin)
+		}
+		args = append(args, "--ai-bin", bin)
+	}
 	if executionMode == "sandboxed" {
 		sandboxMode := normalizeSandboxMode(opts.SandboxMode)
 		if sandboxMode == "" {
 			sandboxMode = defaultSandboxMode
 		}
-		args = append(args, "--codex-sandbox", sandboxMode, "--sandbox-deny-host-fallback")
+		args = append(args, "--ai-sandbox", sandboxMode, "--sandbox-deny-host-fallback")
 	}
 	if opts.Verbose {
 		args = append(args, "--verbose")
@@ -1112,7 +1229,7 @@ func buildContainerRunArgs(opts AuditOptions, inputAbs string, outAbs string, ch
 		"--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777",
 		"--tmpfs", "/home/governor:rw,noexec,nosuid,nodev,size=256m,uid=65532,gid=65532,mode=700",
 		"--tmpfs", "/work:rw,noexec,nosuid,nodev,size=128m,uid=65532,gid=65532,mode=700",
-		"--tmpfs", "/codex-home:rw,nosuid,nodev,size=64m,uid=65532,gid=65532,mode=700",
+		"--tmpfs", "/ai-home:rw,nosuid,nodev,size=64m,uid=65532,gid=65532,mode=700",
 		"--entrypoint", "sh",
 		"-w", "/work",
 		"-v", fmt.Sprintf("%s:/input:ro", inputAbs),
@@ -1122,7 +1239,7 @@ func buildContainerRunArgs(opts AuditOptions, inputAbs string, outAbs string, ch
 		args = append(args, "-v", fmt.Sprintf("%s:/checks:ro", checksAbs))
 	}
 	if seedDir != "" {
-		args = append(args, "-v", fmt.Sprintf("%s:/codex-seed:ro", seedDir))
+		args = append(args, "-v", fmt.Sprintf("%s:/ai-seed:ro", seedDir))
 	}
 	if opts.NetworkPolicy == NetworkNone {
 		args = append(args, "--network", "none")
@@ -1139,7 +1256,7 @@ func buildEntrypointScript(governorArgs []string, hasSeed bool) string {
 	var b strings.Builder
 	b.WriteString("set -eu\n")
 	if hasSeed {
-		b.WriteString("if [ -d /codex-seed ]; then cp -R /codex-seed/. /codex-home/; chmod -R go-rwx /codex-home || true; fi\n")
+		b.WriteString("if [ -d /ai-seed ]; then cp -R /ai-seed/. /ai-home/; chmod -R go-rwx /ai-home || true; fi\n")
 	}
 	b.WriteString("exec ")
 	b.WriteString(shellJoin(append([]string{"governor"}, governorArgs...)))

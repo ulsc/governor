@@ -129,7 +129,7 @@ func TestClassifyCodexFailure_DetectsNonRetryableTLSAndAuth(t *testing.T) {
 
 	authErr := errors.New("unauthorized 401")
 	classification = classifyCodexFailure(authErr, nil, nil)
-	if classification.Retryable || classification.Label != "auth.subscription" {
+	if classification.Retryable || classification.Label != "auth.account" {
 		t.Fatalf("expected non-retryable auth classification, got %+v", classification)
 	}
 

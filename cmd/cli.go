@@ -268,12 +268,28 @@ func runIsolateAudit(args []string) error {
 	network := fs.String("network", "none", "Network policy: unrestricted|none")
 	pull := fs.String("pull", "never", "Image pull policy: always|if-missing|never")
 	cleanImage := fs.Bool("clean-image", false, "Remove runner image after execution")
-	authMode := fs.String("auth-mode", "subscription", "Auth mode: auto|subscription|api-key")
-	codexHome := fs.String("codex-home", "~/.codex", "Host codex home used for subscription auth bundle")
+	authMode := fs.String("auth-mode", "account", "Auth mode: auto|account|api-key")
+	aiHome := fs.String("ai-home", "~/.codex", "Host AI account home used for account auth bundle")
+	fs.StringVar(aiHome, "codex-home", "~/.codex", "Deprecated alias for --ai-home")
+
+	aiProfile := fs.String("ai-profile", "codex", "AI profile name (default codex)")
+	aiProvider := fs.String("ai-provider", "", "AI provider override: codex-cli|openai-compatible")
+	aiModel := fs.String("ai-model", "", "AI model override")
+	aiAuthMode := fs.String("ai-auth-mode", "", "AI auth override: auto|account|api-key")
+	aiBaseURL := fs.String("ai-base-url", "", "AI base URL override for openai-compatible providers")
+	aiAPIKeyEnv := fs.String("ai-api-key-env", "", "AI API key environment variable override")
+
+	var aiBin string
+	fs.StringVar(&aiBin, "ai-bin", "codex", "AI CLI executable path for codex-cli provider")
+	fs.StringVar(&aiBin, "codex-bin", "codex", "Deprecated alias for --ai-bin")
 
 	workers := fs.Int("workers", 3, "Max concurrent worker processes inside isolated run (1-3)")
 	executionMode := fs.String("execution-mode", "host", "Inner worker execution mode: sandboxed|host")
-	codexSandbox := fs.String("codex-sandbox", "read-only", "Inner sandbox mode (sandboxed execution): read-only|workspace-write|danger-full-access")
+
+	var aiSandbox string
+	fs.StringVar(&aiSandbox, "ai-sandbox", "read-only", "Inner sandbox mode (sandboxed execution): read-only|workspace-write|danger-full-access")
+	fs.StringVar(&aiSandbox, "codex-sandbox", "read-only", "Deprecated alias for --ai-sandbox")
+
 	maxFiles := fs.Int("max-files", 20000, "Maximum included file count")
 	maxBytes := fs.Int64("max-bytes", 250*1024*1024, "Maximum included file bytes")
 	timeout := fs.Duration("timeout", 4*time.Minute, "Per-worker timeout")
@@ -327,13 +343,29 @@ func runIsolateAudit(args []string) error {
 	if err != nil {
 		return err
 	}
-	sandboxValue, err := normalizeSandboxModeFlag(*codexSandbox)
+	sandboxValue, err := normalizeSandboxModeFlag(aiSandbox)
 	if err != nil {
 		return err
 	}
 	if modeValue == "host" {
 		sandboxValue = ""
 	}
+	aiRuntime, err := ai.ResolveRuntime(ai.ResolveOptions{
+		Profile:       strings.TrimSpace(*aiProfile),
+		Provider:      strings.TrimSpace(*aiProvider),
+		Model:         strings.TrimSpace(*aiModel),
+		AuthMode:      strings.TrimSpace(*aiAuthMode),
+		Bin:           strings.TrimSpace(aiBin),
+		BaseURL:       strings.TrimSpace(*aiBaseURL),
+		APIKeyEnv:     strings.TrimSpace(*aiAPIKeyEnv),
+		ExecutionMode: modeValue,
+		SandboxMode:   sandboxValue,
+		AccountHome:   strings.TrimSpace(*aiHome),
+	})
+	if err != nil {
+		return err
+	}
+
 	outDir, err := resolveIsolateOutDir(*out, time.Now().UTC())
 	if err != nil {
 		return err
@@ -351,7 +383,8 @@ func runIsolateAudit(args []string) error {
 		CleanImage:    *cleanImage,
 
 		AuthMode:  authValue,
-		CodexHome: strings.TrimSpace(*codexHome),
+		AIRuntime: aiRuntime,
+		AIHome:    strings.TrimSpace(*aiHome),
 
 		Workers:       *workers,
 		ExecutionMode: modeValue,
@@ -1328,12 +1361,14 @@ func normalizeIsolationAuthFlag(raw string) (isolation.AuthMode, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "auto":
 		return isolation.AuthAuto, nil
+	case "account":
+		return isolation.AuthAccount, nil
 	case "subscription":
-		return isolation.AuthSubscription, nil
+		return isolation.AuthAccount, nil
 	case "api-key":
 		return isolation.AuthAPIKey, nil
 	default:
-		return "", errors.New("--auth-mode must be auto, subscription, or api-key")
+		return "", errors.New("--auth-mode must be auto, account, or api-key")
 	}
 }
 
@@ -1372,10 +1407,16 @@ func printUsage() {
 	fmt.Println("Flags (audit):")
 	fmt.Println("  --out <dir>         Output directory (default ./.governor/runs/<timestamp>)")
 	fmt.Println("  --workers <1-3>     Max concurrent worker processes (default 3)")
-	fmt.Println("  --codex-bin <path>  Codex executable (default codex)")
-	fmt.Println("  --allow-custom-codex-bin  Allow non-default codex binary (for testing)")
+	fmt.Println("  --ai-profile <name> AI profile (default codex)")
+	fmt.Println("  --ai-provider <name>  AI provider override: codex-cli|openai-compatible")
+	fmt.Println("  --ai-model <id>    AI model override")
+	fmt.Println("  --ai-auth-mode <mode> AI auth override: auto|account|api-key")
+	fmt.Println("  --ai-base-url <url>  AI base URL override for openai-compatible providers")
+	fmt.Println("  --ai-api-key-env <name>  AI API key env override")
+	fmt.Println("  --ai-bin <path>    AI executable for codex-cli provider (default codex)")
+	fmt.Println("  --allow-custom-ai-bin  Allow non-default ai binary (for testing)")
 	fmt.Println("  --execution-mode <sandboxed|host>  Worker execution mode (default sandboxed)")
-	fmt.Println("  --codex-sandbox <read-only|workspace-write|danger-full-access>  Sandbox mode for sandboxed execution")
+	fmt.Println("  --ai-sandbox <read-only|workspace-write|danger-full-access>  Sandbox mode for sandboxed execution")
 	fmt.Println("  --max-files <n>     Included file count cap (default 20000)")
 	fmt.Println("  --max-bytes <n>     Included file bytes cap (default 262144000)")
 	fmt.Println("  --timeout <dur>     Per-worker timeout (default 4m)")
@@ -1395,10 +1436,17 @@ func printUsage() {
 	fmt.Println("  --network <mode>    Network policy: unrestricted|none (default none)")
 	fmt.Println("  --pull <policy>     Image pull policy: always|if-missing|never (default never)")
 	fmt.Println("  --clean-image       Remove runner image after run")
-	fmt.Println("  --auth-mode <mode>  Auth mode: auto|subscription|api-key (default subscription)")
-	fmt.Println("  --codex-home <dir>  Host codex home for subscription auth bundle (default ~/.codex)")
+	fmt.Println("  --auth-mode <mode>  Auth mode: auto|account|api-key (default account)")
+	fmt.Println("  --ai-home <dir>     Host AI account home for account auth bundle (default ~/.codex)")
+	fmt.Println("  --ai-profile <name> AI profile (default codex)")
+	fmt.Println("  --ai-provider <name>  AI provider override: codex-cli|openai-compatible")
+	fmt.Println("  --ai-model <id>     AI model override")
+	fmt.Println("  --ai-auth-mode <mode> AI auth override: auto|account|api-key")
+	fmt.Println("  --ai-base-url <url> AI base URL override for openai-compatible providers")
+	fmt.Println("  --ai-api-key-env <name>  AI API key env override")
+	fmt.Println("  --ai-bin <path>     AI executable for codex-cli provider (default codex)")
 	fmt.Println("  --execution-mode <sandboxed|host>  Inner worker execution mode (default host)")
-	fmt.Println("  --codex-sandbox <read-only|workspace-write|danger-full-access>  Inner sandbox mode (used when execution is sandboxed)")
+	fmt.Println("  --ai-sandbox <read-only|workspace-write|danger-full-access>  Inner sandbox mode (used when execution is sandboxed)")
 	fmt.Println("  --workers <1-3>     Max worker processes inside isolated run (default 3)")
 	fmt.Println("  --checks-dir <dir>  Mount custom checks read-only into isolated run")
 	fmt.Println("  --only-check <id>   Run only specified check ID (repeatable)")

@@ -751,7 +751,7 @@ func classifyCodexFailure(err error, combinedOut []byte, rawOutput []byte) codex
 	) {
 		return codexFailureClassification{
 			Retryable: false,
-			Label:     "auth.subscription",
+			Label:     "auth.account",
 			Message:   "authentication is unavailable for AI provider in this execution context",
 		}
 	}

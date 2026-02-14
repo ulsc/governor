@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"governor/internal/ai"
 	"governor/internal/model"
 )
 
@@ -44,22 +45,28 @@ func TestResolveRuntimeWithLookPath_AutoFallsBackPodman(t *testing.T) {
 	}
 }
 
-func TestResolveAuthMode_AutoSubscription(t *testing.T) {
+func TestResolveAuthMode_AutoAccount(t *testing.T) {
 	codexHome := t.TempDir()
 	if err := os.WriteFile(filepath.Join(codexHome, "auth.json"), []byte(`{"ok":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	mode, err := resolveAuthMode(AuthAuto, codexHome, map[string]string{})
+	mode, err := resolveAuthMode(AuthAuto, ai.Runtime{
+		Provider:  ai.ProviderCodexCLI,
+		APIKeyEnv: "OPENAI_API_KEY",
+	}, codexHome, map[string]string{})
 	if err != nil {
 		t.Fatalf("resolve auth mode failed: %v", err)
 	}
-	if mode != AuthSubscription {
-		t.Fatalf("expected subscription, got %s", mode)
+	if mode != AuthAccount {
+		t.Fatalf("expected account, got %s", mode)
 	}
 }
 
 func TestResolveAuthMode_AutoAPIKey(t *testing.T) {
-	mode, err := resolveAuthMode(AuthAuto, t.TempDir(), map[string]string{"OPENAI_API_KEY": "x"})
+	mode, err := resolveAuthMode(AuthAuto, ai.Runtime{
+		Provider:  ai.ProviderOpenAICompatible,
+		APIKeyEnv: "OPENAI_API_KEY",
+	}, t.TempDir(), map[string]string{"OPENAI_API_KEY": "x"})
 	if err != nil {
 		t.Fatalf("resolve auth mode failed: %v", err)
 	}
@@ -104,10 +111,10 @@ func TestBuildContainerEnv_SubscriptionDoesNotForwardAPIKeys(t *testing.T) {
 	env := buildContainerEnv(map[string]string{
 		"OPENAI_API_KEY": "secret",
 		"HTTPS_PROXY":    "http://proxy.local:8080",
-	}, AuthSubscription, true)
+	}, ai.Runtime{Provider: ai.ProviderCodexCLI, APIKeyEnv: "OPENAI_API_KEY"}, AuthAccount, true)
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, "OPENAI_API_KEY") {
-		t.Fatalf("expected OPENAI_API_KEY to be excluded for subscription mode")
+		t.Fatalf("expected OPENAI_API_KEY to be excluded for account mode")
 	}
 	if !strings.Contains(joined, "HTTPS_PROXY=http://proxy.local:8080") {
 		t.Fatalf("expected HTTPS_PROXY to be forwarded")
@@ -137,20 +144,20 @@ func TestEnvNames_StripsValues(t *testing.T) {
 
 func TestMergeEnv_OverridesValues(t *testing.T) {
 	base := []string{"PATH=/bin", "HOME=/tmp/home"}
-	overrides := []string{"PATH=/usr/bin:/bin", "CODEX_HOME=/codex-home"}
+	overrides := []string{"PATH=/usr/bin:/bin", "CODEX_HOME=/ai-home"}
 	merged := mergeEnv(base, overrides)
 	joined := strings.Join(merged, "\n")
 	if !strings.Contains(joined, "PATH=/usr/bin:/bin") {
 		t.Fatalf("expected overridden PATH in merged env")
 	}
-	if !strings.Contains(joined, "CODEX_HOME=/codex-home") {
+	if !strings.Contains(joined, "CODEX_HOME=/ai-home") {
 		t.Fatalf("expected CODEX_HOME in merged env")
 	}
 }
 
 func TestBuildEntrypointScript_ContainsSeedCopy(t *testing.T) {
 	script := buildEntrypointScript([]string{"audit", "/input"}, true)
-	if !strings.Contains(script, "/codex-seed") {
+	if !strings.Contains(script, "/ai-seed") {
 		t.Fatalf("expected seed copy logic in script")
 	}
 	if !strings.Contains(script, "exec 'governor' 'audit' '/input'") {
@@ -170,8 +177,8 @@ func TestBuildInnerGovernorArgs_UsesHostExecutionByDefault(t *testing.T) {
 	if !strings.Contains(got, "--execution-mode host") {
 		t.Fatalf("expected host execution mode, got: %s", got)
 	}
-	if strings.Contains(got, "--codex-sandbox") {
-		t.Fatalf("did not expect codex-sandbox flag in host mode, got: %s", got)
+	if strings.Contains(got, "--ai-sandbox") {
+		t.Fatalf("did not expect ai-sandbox flag in host mode, got: %s", got)
 	}
 	if strings.Contains(got, "--sandbox-deny-host-fallback") {
 		t.Fatalf("did not expect sandbox-deny-host-fallback flag in host mode, got: %s", got)
@@ -195,7 +202,7 @@ func TestBuildInnerGovernorArgs_SandboxedEnablesHostFallbackFlag(t *testing.T) {
 	}, false)
 
 	got := strings.Join(args, " ")
-	if !strings.Contains(got, "--codex-sandbox read-only") {
+	if !strings.Contains(got, "--ai-sandbox read-only") {
 		t.Fatalf("expected read-only sandbox in isolated mode, got: %s", got)
 	}
 	if !strings.Contains(got, "--sandbox-deny-host-fallback") {
@@ -241,8 +248,8 @@ func TestNormalizeOptions_HardenedDefaults(t *testing.T) {
 	if opts.PullPolicy != PullNever {
 		t.Fatalf("expected default pull never, got %s", opts.PullPolicy)
 	}
-	if opts.AuthMode != AuthSubscription {
-		t.Fatalf("expected default auth subscription, got %s", opts.AuthMode)
+	if opts.AuthMode != AuthAccount {
+		t.Fatalf("expected default auth account, got %s", opts.AuthMode)
 	}
 	if opts.ExecutionMode != "host" {
 		t.Fatalf("expected default execution mode host, got %s", opts.ExecutionMode)
@@ -325,6 +332,7 @@ func TestRunPreflight_NetworkNoneSkipsProbe(t *testing.T) {
 		t.Context(),
 		"docker",
 		AuditOptions{NetworkPolicy: NetworkNone},
+		ai.Runtime{Provider: ai.ProviderCodexCLI},
 		AuthAPIKey,
 		"",
 		nil,
@@ -342,7 +350,8 @@ func TestRunPreflight_DeterministicSelectionSkipsCodexProbe(t *testing.T) {
 		t.Context(),
 		"docker",
 		AuditOptions{NetworkPolicy: NetworkUnrestricted},
-		AuthSubscription,
+		ai.Runtime{Provider: ai.ProviderCodexCLI},
+		AuthAccount,
 		"",
 		nil,
 		false,
@@ -414,8 +423,8 @@ func TestClassifyCodexProbeFailure_Auth(t *testing.T) {
 		ExitCode: 2,
 		Stderr:   "ERROR: unauthorized 401",
 	})
-	if label != "auth.subscription" {
-		t.Fatalf("expected auth.subscription label, got %q", label)
+	if label != "auth.account" {
+		t.Fatalf("expected auth.account label, got %q", label)
 	}
 }
 
