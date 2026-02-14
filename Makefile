@@ -6,6 +6,8 @@ GOFLAGS ?= -mod=readonly
 IMAGE ?= governor-runner:local
 CODEX_NPM_VERSION ?= 0.101.0
 CODEX_NPM_INTEGRITY ?= sha512-H874q5K5I3chrT588BaddMr7GNvRYypc8C1MKWytNUF2PgxWMko2g/2DgKbt5OdajZKMsWdbsPywu34KQGf5Qw==
+VERSION ?= dev
+LDFLAGS := -ldflags "-X governor/internal/version.Version=$(VERSION)"
 
 INPUT ?= .
 ARGS ?=
@@ -14,7 +16,7 @@ ARGS ?=
 
 build:
 	mkdir -p $(BIN_DIR)
-	$(GO) build $(GOFLAGS) -o $(BIN_DIR)/$(BINARY) .
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BIN_DIR)/$(BINARY) .
 
 test:
 	$(GO) test $(GOFLAGS) ./...

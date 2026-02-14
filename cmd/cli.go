@@ -26,6 +26,7 @@ import (
 	"governor/internal/progress"
 	"governor/internal/trust"
 	"governor/internal/tui"
+	"governor/internal/version"
 	"governor/internal/worker"
 )
 
@@ -43,6 +44,9 @@ func Execute(args []string) error {
 		return runChecks(args[1:])
 	case "init":
 		return runInit(args[1:])
+	case "version", "--version", "-v":
+		fmt.Println("governor " + version.Version)
+		return nil
 	case "help", "--help", "-h":
 		printUsage()
 		return nil
@@ -1776,6 +1780,7 @@ func printUsage() {
 	fmt.Println("Governor CLI")
 	fmt.Println("")
 	fmt.Println("Usage:")
+	fmt.Println("  governor version")
 	fmt.Println("  governor init [flags]")
 	fmt.Println("  governor audit <path-or-zip> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")

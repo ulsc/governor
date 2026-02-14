@@ -8,7 +8,8 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 COPY main.go ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/governor .
+ARG GOVERNOR_VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X governor/internal/version.Version=${GOVERNOR_VERSION}" -o /out/governor .
 
 FROM node:20-bookworm-slim@sha256:c6585df72c34172bebd8d36abed961e231d7d3b5cee2e01294c4495e8a03f687
 
