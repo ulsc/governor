@@ -58,26 +58,30 @@ type InputManifest struct {
 }
 
 type RunMetadata struct {
-	RunID             string    `json:"run_id"`
-	StartedAt         time.Time `json:"started_at"`
-	CompletedAt       time.Time `json:"completed_at"`
-	DurationMS        int64     `json:"duration_ms"`
-	PromptVersion     string    `json:"prompt_version"`
-	CodexRequestedBin string    `json:"codex_requested_bin,omitempty"`
-	CodexBin          string    `json:"codex_bin"`
-	CodexVersion      string    `json:"codex_version,omitempty"`
-	CodexSHA256       string    `json:"codex_sha256,omitempty"`
-	ExecutionMode     string    `json:"execution_mode,omitempty"`
-	CodexSandbox      string    `json:"codex_sandbox,omitempty"`
-	CodexRequired     bool      `json:"codex_required"`
-	CodexUsed         bool      `json:"codex_used"`
-	Workers           int       `json:"workers"`
-	EnabledChecks     int       `json:"enabled_checks,omitempty"`
-	BuiltInChecks     int       `json:"builtin_checks,omitempty"`
-	CustomChecks      int       `json:"custom_checks,omitempty"`
-	AIChecks          int       `json:"ai_checks,omitempty"`
-	RuleChecks        int       `json:"rule_checks,omitempty"`
-	CheckIDs          []string  `json:"check_ids,omitempty"`
+	RunID          string    `json:"run_id"`
+	StartedAt      time.Time `json:"started_at"`
+	CompletedAt    time.Time `json:"completed_at"`
+	DurationMS     int64     `json:"duration_ms"`
+	PromptVersion  string    `json:"prompt_version"`
+	AIProfile      string    `json:"ai_profile,omitempty"`
+	AIProvider     string    `json:"ai_provider,omitempty"`
+	AIModel        string    `json:"ai_model,omitempty"`
+	AIAuthMode     string    `json:"ai_auth_mode,omitempty"`
+	AIRequestedBin string    `json:"ai_requested_bin,omitempty"`
+	AIBin          string    `json:"ai_bin,omitempty"`
+	AIVersion      string    `json:"ai_version,omitempty"`
+	AISHA256       string    `json:"ai_sha256,omitempty"`
+	ExecutionMode  string    `json:"execution_mode,omitempty"`
+	AISandbox      string    `json:"ai_sandbox,omitempty"`
+	AIRequired     bool      `json:"ai_required"`
+	AIUsed         bool      `json:"ai_used"`
+	Workers        int       `json:"workers"`
+	EnabledChecks  int       `json:"enabled_checks,omitempty"`
+	BuiltInChecks  int       `json:"builtin_checks,omitempty"`
+	CustomChecks   int       `json:"custom_checks,omitempty"`
+	AIChecks       int       `json:"ai_checks,omitempty"`
+	RuleChecks     int       `json:"rule_checks,omitempty"`
+	CheckIDs       []string  `json:"check_ids,omitempty"`
 }
 
 type InputSummary struct {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-isatty"
+	"governor/internal/ai"
 	"governor/internal/app"
 	"governor/internal/checks"
 	"governor/internal/checkstui"
@@ -51,10 +52,27 @@ func runAudit(args []string) error {
 
 	out := fs.String("out", "", "Output directory for run artifacts (default ./.governor/runs/<timestamp>)")
 	workers := fs.Int("workers", 3, "Max concurrent worker processes (1-3)")
-	codexBin := fs.String("codex-bin", "codex", "Codex executable path")
-	allowCustomCodexBin := fs.Bool("allow-custom-codex-bin", false, "Allow non-default codex binary path (for testing only)")
-	executionMode := fs.String("execution-mode", "sandboxed", "Codex execution mode: sandboxed|host")
-	codexSandbox := fs.String("codex-sandbox", "read-only", "Codex sandbox mode for sandboxed execution: read-only|workspace-write|danger-full-access")
+	aiProfile := fs.String("ai-profile", "codex", "AI profile name (default codex)")
+	aiProvider := fs.String("ai-provider", "", "AI provider override: codex-cli|openai-compatible")
+	aiModel := fs.String("ai-model", "", "AI model override")
+	aiAuthMode := fs.String("ai-auth-mode", "", "AI auth override: auto|account|api-key")
+	aiBaseURL := fs.String("ai-base-url", "", "AI base URL override for openai-compatible providers")
+	aiAPIKeyEnv := fs.String("ai-api-key-env", "", "AI API key environment variable override")
+
+	var aiBin string
+	fs.StringVar(&aiBin, "ai-bin", "codex", "AI CLI executable path (used by codex-cli provider)")
+	fs.StringVar(&aiBin, "codex-bin", "codex", "Deprecated alias for --ai-bin")
+
+	var allowCustomAIBin bool
+	fs.BoolVar(&allowCustomAIBin, "allow-custom-ai-bin", false, "Allow non-default AI binary path (for testing only)")
+	fs.BoolVar(&allowCustomAIBin, "allow-custom-codex-bin", false, "Deprecated alias for --allow-custom-ai-bin")
+
+	executionMode := fs.String("execution-mode", "sandboxed", "AI execution mode: sandboxed|host")
+
+	var aiSandbox string
+	fs.StringVar(&aiSandbox, "ai-sandbox", "read-only", "AI sandbox mode for sandboxed execution: read-only|workspace-write|danger-full-access")
+	fs.StringVar(&aiSandbox, "codex-sandbox", "read-only", "Deprecated alias for --ai-sandbox")
+
 	maxFiles := fs.Int("max-files", 20000, "Maximum included file count")
 	maxBytes := fs.Int64("max-bytes", 250*1024*1024, "Maximum included file bytes")
 	timeout := fs.Duration("timeout", 4*time.Minute, "Per-worker timeout")
@@ -104,8 +122,8 @@ func runAudit(args []string) error {
 	if *timeout <= 0 {
 		return errors.New("--timeout must be > 0")
 	}
-	if strings.TrimSpace(*codexBin) == "" {
-		return errors.New("--codex-bin cannot be empty")
+	if strings.TrimSpace(aiBin) == "" {
+		return errors.New("--ai-bin cannot be empty")
 	}
 	if *enableTUI && *disableTUI {
 		return errors.New("cannot set both --tui and --no-tui")
@@ -115,7 +133,7 @@ func runAudit(args []string) error {
 	if err != nil {
 		return err
 	}
-	sandboxValue, err := normalizeSandboxModeFlag(*codexSandbox)
+	sandboxValue, err := normalizeSandboxModeFlag(aiSandbox)
 	if err != nil {
 		return err
 	}
@@ -132,14 +150,29 @@ func runAudit(args []string) error {
 	if err != nil {
 		return err
 	}
-	codexRequired := checks.SelectionRequiresAI(selection.Checks)
+	aiRequired := checks.SelectionRequiresAI(selection.Checks)
+	aiRuntime, err := ai.ResolveRuntime(ai.ResolveOptions{
+		Profile:       strings.TrimSpace(*aiProfile),
+		Provider:      strings.TrimSpace(*aiProvider),
+		Model:         strings.TrimSpace(*aiModel),
+		AuthMode:      strings.TrimSpace(*aiAuthMode),
+		Bin:           strings.TrimSpace(aiBin),
+		BaseURL:       strings.TrimSpace(*aiBaseURL),
+		APIKeyEnv:     strings.TrimSpace(*aiAPIKeyEnv),
+		ExecutionMode: modeValue,
+		SandboxMode:   sandboxValue,
+	})
+	if err != nil {
+		return err
+	}
 
-	codexInfo := trust.CodexBinary{}
-	if codexRequired {
-		codexInfo, err = trust.ResolveCodexBinary(context.Background(), *codexBin, *allowCustomCodexBin)
+	aiInfo := trust.AIBinary{}
+	if aiRequired && aiRuntime.UsesCLI() {
+		aiInfo, err = trust.ResolveAIBinary(context.Background(), aiRuntime.Bin, allowCustomAIBin)
 		if err != nil {
 			return err
 		}
+		aiRuntime.Bin = aiInfo.ResolvedPath
 	}
 
 	useTUI := isInteractiveTerminal()
@@ -153,10 +186,11 @@ func runAudit(args []string) error {
 	auditOpts := app.AuditOptions{
 		InputPath:     positionalInput,
 		OutDir:        *out,
-		CodexBin:      codexInfo.ResolvedPath,
-		CodexVersion:  codexInfo.Version,
-		CodexSHA256:   codexInfo.SHA256,
-		CodexRequest:  codexInfo.RequestedPath,
+		AIRuntime:     aiRuntime,
+		AIBin:         aiInfo.ResolvedPath,
+		AIVersion:     aiInfo.Version,
+		AISHA256:      aiInfo.SHA256,
+		AIRequest:     aiInfo.RequestedPath,
 		Workers:       *workers,
 		MaxFiles:      *maxFiles,
 		MaxBytes:      *maxBytes,
@@ -347,21 +381,33 @@ func printAuditSummary(report model.AuditReport, paths app.ArtifactPaths) {
 	fmt.Printf("audit markdown: %s\n", filepath.Clean(paths.MarkdownPath))
 	fmt.Printf("audit json:     %s\n", filepath.Clean(paths.JSONPath))
 	fmt.Printf("audit html:     %s\n", filepath.Clean(paths.HTMLPath))
-	if strings.TrimSpace(report.RunMetadata.CodexRequestedBin) != "" {
-		fmt.Printf("codex request:  %s\n", report.RunMetadata.CodexRequestedBin)
+	if strings.TrimSpace(report.RunMetadata.AIProfile) != "" {
+		fmt.Printf("ai profile:     %s\n", report.RunMetadata.AIProfile)
 	}
-	if strings.TrimSpace(report.RunMetadata.CodexBin) != "" {
-		fmt.Printf("codex resolved: %s\n", report.RunMetadata.CodexBin)
+	if strings.TrimSpace(report.RunMetadata.AIProvider) != "" {
+		fmt.Printf("ai provider:    %s\n", report.RunMetadata.AIProvider)
 	}
-	if strings.TrimSpace(report.RunMetadata.CodexVersion) != "" {
-		fmt.Printf("codex version:  %s\n", report.RunMetadata.CodexVersion)
+	if strings.TrimSpace(report.RunMetadata.AIModel) != "" {
+		fmt.Printf("ai model:       %s\n", report.RunMetadata.AIModel)
 	}
-	fmt.Printf("codex required: %t\n", report.RunMetadata.CodexRequired)
-	fmt.Printf("codex used:     %t\n", report.RunMetadata.CodexUsed)
+	if strings.TrimSpace(report.RunMetadata.AIAuthMode) != "" {
+		fmt.Printf("ai auth mode:   %s\n", report.RunMetadata.AIAuthMode)
+	}
+	if strings.TrimSpace(report.RunMetadata.AIRequestedBin) != "" {
+		fmt.Printf("ai request:     %s\n", report.RunMetadata.AIRequestedBin)
+	}
+	if strings.TrimSpace(report.RunMetadata.AIBin) != "" {
+		fmt.Printf("ai resolved:    %s\n", report.RunMetadata.AIBin)
+	}
+	if strings.TrimSpace(report.RunMetadata.AIVersion) != "" {
+		fmt.Printf("ai version:     %s\n", report.RunMetadata.AIVersion)
+	}
+	fmt.Printf("ai required:    %t\n", report.RunMetadata.AIRequired)
+	fmt.Printf("ai used:        %t\n", report.RunMetadata.AIUsed)
 	if strings.TrimSpace(report.RunMetadata.ExecutionMode) != "" {
 		mode := report.RunMetadata.ExecutionMode
-		if strings.TrimSpace(report.RunMetadata.CodexSandbox) != "" {
-			mode += " (sandbox=" + report.RunMetadata.CodexSandbox + ")"
+		if strings.TrimSpace(report.RunMetadata.AISandbox) != "" {
+			mode += " (sandbox=" + report.RunMetadata.AISandbox + ")"
 		}
 		fmt.Printf("execution:      %s\n", mode)
 	}
@@ -634,10 +680,27 @@ func runChecksExtract(args []string) error {
 	fs.SetOutput(flag.CommandLine.Output())
 
 	checksDir := fs.String("checks-dir", "", "Checks directory (default ./.governor/checks in repo, otherwise ~/.governor/checks)")
-	codexBin := fs.String("codex-bin", "codex", "Codex executable path")
-	allowCustomCodexBin := fs.Bool("allow-custom-codex-bin", false, "Allow non-default codex binary path (for testing only)")
-	executionMode := fs.String("execution-mode", "sandboxed", "Codex execution mode: sandboxed|host")
-	codexSandbox := fs.String("codex-sandbox", "read-only", "Codex sandbox mode for sandboxed execution: read-only|workspace-write|danger-full-access")
+	aiProfile := fs.String("ai-profile", "codex", "AI profile name (default codex)")
+	aiProvider := fs.String("ai-provider", "", "AI provider override: codex-cli|openai-compatible")
+	aiModel := fs.String("ai-model", "", "AI model override")
+	aiAuthMode := fs.String("ai-auth-mode", "", "AI auth override: auto|account|api-key")
+	aiBaseURL := fs.String("ai-base-url", "", "AI base URL override for openai-compatible providers")
+	aiAPIKeyEnv := fs.String("ai-api-key-env", "", "AI API key environment variable override")
+
+	var aiBin string
+	fs.StringVar(&aiBin, "ai-bin", "codex", "AI CLI executable path (used by codex-cli provider)")
+	fs.StringVar(&aiBin, "codex-bin", "codex", "Deprecated alias for --ai-bin")
+
+	var allowCustomAIBin bool
+	fs.BoolVar(&allowCustomAIBin, "allow-custom-ai-bin", false, "Allow non-default AI binary path (for testing only)")
+	fs.BoolVar(&allowCustomAIBin, "allow-custom-codex-bin", false, "Deprecated alias for --allow-custom-ai-bin")
+
+	executionMode := fs.String("execution-mode", "sandboxed", "AI execution mode: sandboxed|host")
+
+	var aiSandbox string
+	fs.StringVar(&aiSandbox, "ai-sandbox", "read-only", "AI sandbox mode for sandboxed execution: read-only|workspace-write|danger-full-access")
+	fs.StringVar(&aiSandbox, "codex-sandbox", "read-only", "Deprecated alias for --ai-sandbox")
+
 	maxChecks := fs.Int("max-checks", 10, "Maximum generated checks")
 	replace := fs.Bool("replace", false, "Overwrite existing check files with same ID")
 	allowPDF := fs.Bool("allow-pdf", false, "Allow PDF parsing via local pdftotext (disabled by default)")
@@ -660,29 +723,49 @@ func runChecksExtract(args []string) error {
 	if len(inputValues) == 0 {
 		return errors.New("at least one --input (or positional input path) is required")
 	}
-	if strings.TrimSpace(*codexBin) == "" {
-		return errors.New("--codex-bin cannot be empty")
+	if strings.TrimSpace(aiBin) == "" {
+		return errors.New("--ai-bin cannot be empty")
 	}
 	modeValue, err := normalizeExecutionModeFlag(*executionMode)
 	if err != nil {
 		return err
 	}
-	sandboxValue, err := normalizeSandboxModeFlag(*codexSandbox)
+	sandboxValue, err := normalizeSandboxModeFlag(aiSandbox)
 	if err != nil {
 		return err
 	}
 	if modeValue == "host" {
 		sandboxValue = ""
 	}
-	codexInfo, err := trust.ResolveCodexBinary(context.Background(), *codexBin, *allowCustomCodexBin)
+
+	aiRuntime, err := ai.ResolveRuntime(ai.ResolveOptions{
+		Profile:       strings.TrimSpace(*aiProfile),
+		Provider:      strings.TrimSpace(*aiProvider),
+		Model:         strings.TrimSpace(*aiModel),
+		AuthMode:      strings.TrimSpace(*aiAuthMode),
+		Bin:           strings.TrimSpace(aiBin),
+		BaseURL:       strings.TrimSpace(*aiBaseURL),
+		APIKeyEnv:     strings.TrimSpace(*aiAPIKeyEnv),
+		ExecutionMode: modeValue,
+		SandboxMode:   sandboxValue,
+	})
 	if err != nil {
 		return err
 	}
 
+	if aiRuntime.UsesCLI() {
+		aiInfo, err := trust.ResolveAIBinary(context.Background(), aiRuntime.Bin, allowCustomAIBin)
+		if err != nil {
+			return err
+		}
+		aiRuntime.Bin = aiInfo.ResolvedPath
+	}
+
 	res, err := extractor.Run(context.Background(), extractor.Options{
+		AIRuntime: aiRuntime,
 		Inputs:    inputValues,
 		ChecksDir: *checksDir,
-		CodexBin:  codexInfo.ResolvedPath,
+		CodexBin:  aiRuntime.Bin,
 		MaxChecks: *maxChecks,
 		Replace:   *replace,
 		Mode:      modeValue,
@@ -1263,7 +1346,7 @@ func normalizeSandboxModeFlag(raw string) (string, error) {
 	case "danger-full-access":
 		return "danger-full-access", nil
 	default:
-		return "", errors.New("--codex-sandbox must be read-only, workspace-write, or danger-full-access")
+		return "", errors.New("--ai-sandbox must be read-only, workspace-write, or danger-full-access")
 	}
 }
 

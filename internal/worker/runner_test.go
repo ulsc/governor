@@ -152,7 +152,7 @@ func TestBuildRetryFallbackOutput(t *testing.T) {
 	if len(out.Findings) != 0 {
 		t.Fatalf("expected empty findings, got %d", len(out.Findings))
 	}
-	if !strings.Contains(strings.ToLower(out.Summary), "retryable codex transport failures") {
+	if !strings.Contains(strings.ToLower(out.Summary), "retryable ai transport failures") {
 		t.Fatalf("unexpected summary: %s", out.Summary)
 	}
 	if len(out.Notes) == 0 {

@@ -285,24 +285,36 @@ func RenderHTML(report model.AuditReport) string {
 	b.WriteString("      <ul class=\"meta-list\">\n")
 	b.WriteString(fmt.Sprintf("        <li><strong>Input:</strong> <code>%s</code> (%s)</li>\n", htmlInline(report.InputSummary.InputPath), htmlInline(report.InputSummary.InputType)))
 	b.WriteString(fmt.Sprintf("        <li><strong>Workspace:</strong> <code>%s</code></li>\n", htmlInline(report.InputSummary.WorkspacePath)))
-	if strings.TrimSpace(report.RunMetadata.CodexRequestedBin) != "" {
-		b.WriteString(fmt.Sprintf("        <li><strong>Codex requested:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.CodexRequestedBin)))
+	if strings.TrimSpace(report.RunMetadata.AIProfile) != "" {
+		b.WriteString(fmt.Sprintf("        <li><strong>AI profile:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.AIProfile)))
 	}
-	if strings.TrimSpace(report.RunMetadata.CodexBin) != "" {
-		b.WriteString(fmt.Sprintf("        <li><strong>Codex resolved:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.CodexBin)))
+	if strings.TrimSpace(report.RunMetadata.AIProvider) != "" {
+		b.WriteString(fmt.Sprintf("        <li><strong>AI provider:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.AIProvider)))
 	}
-	if strings.TrimSpace(report.RunMetadata.CodexVersion) != "" {
-		b.WriteString(fmt.Sprintf("        <li><strong>Codex version:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.CodexVersion)))
+	if strings.TrimSpace(report.RunMetadata.AIModel) != "" {
+		b.WriteString(fmt.Sprintf("        <li><strong>AI model:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.AIModel)))
 	}
-	if strings.TrimSpace(report.RunMetadata.CodexSHA256) != "" {
-		b.WriteString(fmt.Sprintf("        <li><strong>Codex SHA-256:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.CodexSHA256)))
+	if strings.TrimSpace(report.RunMetadata.AIAuthMode) != "" {
+		b.WriteString(fmt.Sprintf("        <li><strong>AI auth:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.AIAuthMode)))
 	}
-	b.WriteString(fmt.Sprintf("        <li><strong>Codex required:</strong> <code>%t</code></li>\n", report.RunMetadata.CodexRequired))
-	b.WriteString(fmt.Sprintf("        <li><strong>Codex used:</strong> <code>%t</code></li>\n", report.RunMetadata.CodexUsed))
+	if strings.TrimSpace(report.RunMetadata.AIRequestedBin) != "" {
+		b.WriteString(fmt.Sprintf("        <li><strong>AI requested:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.AIRequestedBin)))
+	}
+	if strings.TrimSpace(report.RunMetadata.AIBin) != "" {
+		b.WriteString(fmt.Sprintf("        <li><strong>AI resolved:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.AIBin)))
+	}
+	if strings.TrimSpace(report.RunMetadata.AIVersion) != "" {
+		b.WriteString(fmt.Sprintf("        <li><strong>AI version:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.AIVersion)))
+	}
+	if strings.TrimSpace(report.RunMetadata.AISHA256) != "" {
+		b.WriteString(fmt.Sprintf("        <li><strong>AI SHA-256:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.AISHA256)))
+	}
+	b.WriteString(fmt.Sprintf("        <li><strong>AI required:</strong> <code>%t</code></li>\n", report.RunMetadata.AIRequired))
+	b.WriteString(fmt.Sprintf("        <li><strong>AI used:</strong> <code>%t</code></li>\n", report.RunMetadata.AIUsed))
 	if strings.TrimSpace(report.RunMetadata.ExecutionMode) != "" {
 		modeLine := report.RunMetadata.ExecutionMode
-		if strings.TrimSpace(report.RunMetadata.CodexSandbox) != "" {
-			modeLine += " / sandbox=" + report.RunMetadata.CodexSandbox
+		if strings.TrimSpace(report.RunMetadata.AISandbox) != "" {
+			modeLine += " / sandbox=" + report.RunMetadata.AISandbox
 		}
 		b.WriteString(fmt.Sprintf("        <li><strong>Execution:</strong> <code>%s</code></li>\n", htmlInline(modeLine)))
 	}
@@ -456,24 +468,36 @@ func RenderMarkdown(report model.AuditReport) string {
 	b.WriteString(fmt.Sprintf("- Input: `%s` (%s)\n", sanitizeInline(report.InputSummary.InputPath), sanitizeInline(report.InputSummary.InputType)))
 	b.WriteString(fmt.Sprintf("- Workspace: `%s`\n", sanitizeInline(report.InputSummary.WorkspacePath)))
 	b.WriteString(fmt.Sprintf("- Duration: `%d ms`\n", report.RunMetadata.DurationMS))
-	if strings.TrimSpace(report.RunMetadata.CodexRequestedBin) != "" {
-		b.WriteString(fmt.Sprintf("- Codex requested: `%s`\n", sanitizeInline(report.RunMetadata.CodexRequestedBin)))
+	if strings.TrimSpace(report.RunMetadata.AIProfile) != "" {
+		b.WriteString(fmt.Sprintf("- AI profile: `%s`\n", sanitizeInline(report.RunMetadata.AIProfile)))
 	}
-	if strings.TrimSpace(report.RunMetadata.CodexBin) != "" {
-		b.WriteString(fmt.Sprintf("- Codex resolved: `%s`\n", sanitizeInline(report.RunMetadata.CodexBin)))
+	if strings.TrimSpace(report.RunMetadata.AIProvider) != "" {
+		b.WriteString(fmt.Sprintf("- AI provider: `%s`\n", sanitizeInline(report.RunMetadata.AIProvider)))
 	}
-	if strings.TrimSpace(report.RunMetadata.CodexVersion) != "" {
-		b.WriteString(fmt.Sprintf("- Codex version: `%s`\n", sanitizeInline(report.RunMetadata.CodexVersion)))
+	if strings.TrimSpace(report.RunMetadata.AIModel) != "" {
+		b.WriteString(fmt.Sprintf("- AI model: `%s`\n", sanitizeInline(report.RunMetadata.AIModel)))
 	}
-	if strings.TrimSpace(report.RunMetadata.CodexSHA256) != "" {
-		b.WriteString(fmt.Sprintf("- Codex sha256: `%s`\n", sanitizeInline(report.RunMetadata.CodexSHA256)))
+	if strings.TrimSpace(report.RunMetadata.AIAuthMode) != "" {
+		b.WriteString(fmt.Sprintf("- AI auth: `%s`\n", sanitizeInline(report.RunMetadata.AIAuthMode)))
 	}
-	b.WriteString(fmt.Sprintf("- Codex required: `%t`\n", report.RunMetadata.CodexRequired))
-	b.WriteString(fmt.Sprintf("- Codex used: `%t`\n", report.RunMetadata.CodexUsed))
+	if strings.TrimSpace(report.RunMetadata.AIRequestedBin) != "" {
+		b.WriteString(fmt.Sprintf("- AI requested: `%s`\n", sanitizeInline(report.RunMetadata.AIRequestedBin)))
+	}
+	if strings.TrimSpace(report.RunMetadata.AIBin) != "" {
+		b.WriteString(fmt.Sprintf("- AI resolved: `%s`\n", sanitizeInline(report.RunMetadata.AIBin)))
+	}
+	if strings.TrimSpace(report.RunMetadata.AIVersion) != "" {
+		b.WriteString(fmt.Sprintf("- AI version: `%s`\n", sanitizeInline(report.RunMetadata.AIVersion)))
+	}
+	if strings.TrimSpace(report.RunMetadata.AISHA256) != "" {
+		b.WriteString(fmt.Sprintf("- AI sha256: `%s`\n", sanitizeInline(report.RunMetadata.AISHA256)))
+	}
+	b.WriteString(fmt.Sprintf("- AI required: `%t`\n", report.RunMetadata.AIRequired))
+	b.WriteString(fmt.Sprintf("- AI used: `%t`\n", report.RunMetadata.AIUsed))
 	if strings.TrimSpace(report.RunMetadata.ExecutionMode) != "" {
 		modeLine := report.RunMetadata.ExecutionMode
-		if strings.TrimSpace(report.RunMetadata.CodexSandbox) != "" {
-			modeLine += " / sandbox=" + report.RunMetadata.CodexSandbox
+		if strings.TrimSpace(report.RunMetadata.AISandbox) != "" {
+			modeLine += " / sandbox=" + report.RunMetadata.AISandbox
 		}
 		b.WriteString(fmt.Sprintf("- Execution: `%s`\n", sanitizeInline(modeLine)))
 	}

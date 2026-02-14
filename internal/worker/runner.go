@@ -402,7 +402,7 @@ func executeTrackWithRetries(
 	var lastErr error
 	var sawRetryableFailure bool
 	lastRetryableLabel := "stream.transient"
-	lastRetryableMessage := "retryable Codex transport failure"
+	lastRetryableMessage := "retryable AI transport failure"
 	attempted := 0
 
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -575,7 +575,7 @@ func buildCodexExecArgs(opts RunOptions, workspace string, schemaPath string, ou
 	case ExecutionModeSandboxed:
 		args = append(args, "-s", normalizeSandboxMode(opts.SandboxMode))
 	case ExecutionModeHost:
-		// Codex defaults to sandboxed execution when no sandbox flag is provided.
+		// AI CLI defaults to sandboxed execution when no sandbox flag is provided.
 		// Force host-equivalent execution explicitly for governor's host mode.
 		args = append(args, "-s", "danger-full-access")
 	}
@@ -735,7 +735,7 @@ func classifyCodexFailure(err error, combinedOut []byte, rawOutput []byte) codex
 		return codexFailureClassification{
 			Retryable: false,
 			Label:     "infra.tls_trust",
-			Message:   "TLS trust validation failed while Codex attempted HTTPS",
+			Message:   "TLS trust validation failed while AI provider attempted HTTPS",
 		}
 	}
 
@@ -752,7 +752,7 @@ func classifyCodexFailure(err error, combinedOut []byte, rawOutput []byte) codex
 		return codexFailureClassification{
 			Retryable: false,
 			Label:     "auth.subscription",
-			Message:   "authentication is unavailable for Codex in this execution context",
+			Message:   "authentication is unavailable for AI provider in this execution context",
 		}
 	}
 
@@ -769,7 +769,7 @@ func classifyCodexFailure(err error, combinedOut []byte, rawOutput []byte) codex
 		return codexFailureClassification{
 			Retryable: true,
 			Label:     "infra.network",
-			Message:   "retryable Codex network failure",
+			Message:   "retryable AI network failure",
 		}
 	}
 
@@ -783,7 +783,7 @@ func classifyCodexFailure(err error, combinedOut []byte, rawOutput []byte) codex
 		return codexFailureClassification{
 			Retryable: true,
 			Label:     "stream.transient",
-			Message:   "retryable Codex stream failure",
+			Message:   "retryable AI stream failure",
 		}
 	}
 
@@ -835,11 +835,11 @@ func hasAnyPattern(text string, patterns ...string) bool {
 
 func buildRetryFallbackOutput(trackName string, attempts int) workerOutput {
 	return workerOutput{
-		Summary: fmt.Sprintf("No findings generated for %s due to retryable Codex transport failures.", trackName),
+		Summary: fmt.Sprintf("No findings generated for %s due to retryable AI transport failures.", trackName),
 		Notes: []string{
-			fmt.Sprintf("Governor retried %d time(s) after retryable Codex stream/network errors.", attempts),
+			fmt.Sprintf("Governor retried %d time(s) after retryable AI stream/network errors.", attempts),
 			"This fallback output prevents empty or invalid worker output artifacts.",
-			"Re-run this audit when Codex network connectivity is stable.",
+			"Re-run this audit when AI provider connectivity is stable.",
 		},
 		Findings: []model.Finding{},
 	}

@@ -258,17 +258,17 @@ func runPreflight(
 	}
 
 	if opts.NetworkPolicy == NetworkNone {
-		result.Warnings = append(result.Warnings, "isolate preflight: network policy is none; Codex egress is disabled by policy")
+		result.Warnings = append(result.Warnings, "isolate preflight: network policy is none; AI egress is disabled by policy")
 		return result
 	}
 
 	endpointProbe, err := probeCodexEndpoint(ctx, runtimeBin, opts, seedDir, containerEnv)
 	if err != nil {
-		result.Warnings = append(result.Warnings, "[infra.network] isolate preflight: Codex endpoint probe failed: "+sanitizeErr(err))
+		result.Warnings = append(result.Warnings, "[infra.network] isolate preflight: AI endpoint probe failed: "+sanitizeErr(err))
 	} else if endpointProbe.HTTPSOK {
-		result.Notes = append(result.Notes, fmt.Sprintf("isolate preflight: Codex endpoint reachable (status=%d)", endpointProbe.Status))
+		result.Notes = append(result.Notes, fmt.Sprintf("isolate preflight: AI endpoint reachable (status=%d)", endpointProbe.Status))
 	} else {
-		msg := "[infra.network] isolate preflight: Codex endpoint probe could not establish HTTPS"
+		msg := "[infra.network] isolate preflight: AI endpoint probe could not establish HTTPS"
 		if strings.TrimSpace(endpointProbe.Error) != "" {
 			msg += ": " + sanitizeErr(errors.New(endpointProbe.Error))
 		}
@@ -279,17 +279,17 @@ func runPreflight(
 	defer cancel()
 	codexProbe, err := probeCodexExec(probeCtx, runtimeBin, opts, seedDir, containerEnv)
 	if err != nil {
-		result.Warnings = append(result.Warnings, "[infra.unknown] isolate preflight: Codex exec probe failed: "+sanitizeErr(err))
+		result.Warnings = append(result.Warnings, "[infra.unknown] isolate preflight: AI exec probe failed: "+sanitizeErr(err))
 		return result
 	}
 	if !codexProbe.HasCABundle {
 		result.Warnings = append(result.Warnings, "[infra.tls_trust] isolate preflight: runner image does not expose a CA trust bundle")
 	}
 	if codexProbe.OK {
-		result.Notes = append(result.Notes, "isolate preflight: Codex exec probe succeeded")
+		result.Notes = append(result.Notes, "isolate preflight: AI exec probe succeeded")
 	} else {
 		label, reason := classifyCodexProbeFailure(codexProbe)
-		msg := fmt.Sprintf("[%s] isolate preflight: Codex exec probe failed (exit=%d): %s", label, codexProbe.ExitCode, reason)
+		msg := fmt.Sprintf("[%s] isolate preflight: AI exec probe failed (exit=%d): %s", label, codexProbe.ExitCode, reason)
 		if tail := summarizeProbeTail(codexProbe.Stderr, codexProbe.Stdout); tail != "" {
 			msg += ": " + tail
 		}
@@ -364,7 +364,7 @@ func classifyCodexProbeFailure(probe codexProbeResult) (label string, reason str
 		"self signed certificate",
 		"tls handshake failure",
 	) {
-		return "infra.tls_trust", "TLS trust validation failed while Codex attempted HTTPS"
+		return "infra.tls_trust", "TLS trust validation failed while AI provider attempted HTTPS"
 	}
 	if hasAnyPattern(text,
 		"authentication failed",
@@ -387,15 +387,15 @@ func classifyCodexProbeFailure(probe codexProbeResult) (label string, reason str
 		"timed out",
 		"context deadline exceeded",
 	) {
-		return "infra.network", "network connectivity to Codex endpoints failed"
+		return "infra.network", "network connectivity to AI endpoints failed"
 	}
 	if hasAnyPattern(text,
 		"stream disconnected before completion",
 		"error sending request for url",
 	) {
-		return "stream.transient", "Codex stream disconnected before a response completed"
+		return "stream.transient", "AI stream disconnected before a response completed"
 	}
-	return "infra.unknown", "Codex probe failed with an unclassified error"
+	return "infra.unknown", "AI probe failed with an unclassified error"
 }
 
 func probeCodexEndpoint(

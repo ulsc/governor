@@ -43,7 +43,7 @@ func TestResolveCodexBinary_CaseVariantRequiresOptIn(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for custom binary without opt-in")
 	}
-	if !strings.Contains(err.Error(), "custom codex binary is disabled") {
+	if !strings.Contains(err.Error(), "custom ai binary is disabled") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

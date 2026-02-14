@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"governor/internal/ai"
 	"governor/internal/checks"
 	"governor/internal/intake"
 	"governor/internal/model"
@@ -23,10 +24,11 @@ import (
 type AuditOptions struct {
 	InputPath     string
 	OutDir        string
-	CodexBin      string
-	CodexVersion  string
-	CodexSHA256   string
-	CodexRequest  string
+	AIRuntime     ai.Runtime
+	AIBin         string
+	AIVersion     string
+	AISHA256      string
+	AIRequest     string
 	Workers       int
 	MaxFiles      int
 	MaxBytes      int64
@@ -181,10 +183,11 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 	}
 	builtinCount, customCount := checks.CountChecksBySource(selection.Checks)
 	aiCount, ruleCount := checks.CountChecksByEngine(selection.Checks)
-	codexRequired := checks.SelectionRequiresAI(selection.Checks)
+	aiRequired := checks.SelectionRequiresAI(selection.Checks)
 
 	workerResults := worker.RunAll(ctx, stage.WorkspacePath, stage.Manifest, selection.Checks, worker.RunOptions{
-		CodexBin:    opts.CodexBin,
+		AIRuntime:   opts.AIRuntime,
+		CodexBin:    opts.AIBin,
 		OutDir:      runDir,
 		MaxParallel: opts.Workers,
 		Timeout:     opts.Timeout,
@@ -223,26 +226,30 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 
 	report = model.AuditReport{
 		RunMetadata: model.RunMetadata{
-			RunID:             runID,
-			StartedAt:         started,
-			CompletedAt:       completed,
-			DurationMS:        completed.Sub(started).Milliseconds(),
-			PromptVersion:     prompt.Version,
-			CodexBin:          opts.CodexBin,
-			CodexRequestedBin: opts.CodexRequest,
-			CodexVersion:      opts.CodexVersion,
-			CodexSHA256:       opts.CodexSHA256,
-			ExecutionMode:     opts.ExecutionMode,
-			CodexSandbox:      opts.SandboxMode,
-			CodexRequired:     codexRequired,
-			CodexUsed:         codexRequired,
-			Workers:           opts.Workers,
-			EnabledChecks:     len(enabledCheckIDs),
-			BuiltInChecks:     builtinCount,
-			CustomChecks:      customCount,
-			AIChecks:          aiCount,
-			RuleChecks:        ruleCount,
-			CheckIDs:          enabledCheckIDs,
+			RunID:          runID,
+			StartedAt:      started,
+			CompletedAt:    completed,
+			DurationMS:     completed.Sub(started).Milliseconds(),
+			PromptVersion:  prompt.Version,
+			AIProfile:      opts.AIRuntime.Profile,
+			AIProvider:     opts.AIRuntime.Provider,
+			AIModel:        opts.AIRuntime.Model,
+			AIAuthMode:     opts.AIRuntime.AuthMode,
+			AIBin:          opts.AIBin,
+			AIRequestedBin: opts.AIRequest,
+			AIVersion:      opts.AIVersion,
+			AISHA256:       opts.AISHA256,
+			ExecutionMode:  opts.ExecutionMode,
+			AISandbox:      opts.SandboxMode,
+			AIRequired:     aiRequired,
+			AIUsed:         aiRequired,
+			Workers:        opts.Workers,
+			EnabledChecks:  len(enabledCheckIDs),
+			BuiltInChecks:  builtinCount,
+			CustomChecks:   customCount,
+			AIChecks:       aiCount,
+			RuleChecks:     ruleCount,
+			CheckIDs:       enabledCheckIDs,
 		},
 		InputSummary: model.InputSummary{
 			InputType:     stage.InputType,

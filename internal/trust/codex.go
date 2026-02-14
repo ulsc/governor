@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-type CodexBinary struct {
+type AIBinary struct {
 	RequestedPath string
 	ResolvedPath  string
 	Version       string
@@ -22,8 +22,8 @@ type CodexBinary struct {
 	IsDefaultName bool
 }
 
-// ResolveCodexBinary canonicalizes and attests the codex executable before use.
-func ResolveCodexBinary(ctx context.Context, requested string, allowCustom bool) (CodexBinary, error) {
+// ResolveAIBinary canonicalizes and attests the configured AI executable before use.
+func ResolveAIBinary(ctx context.Context, requested string, allowCustom bool) (AIBinary, error) {
 	requested = strings.TrimSpace(requested)
 	if requested == "" {
 		requested = "codex"
@@ -31,17 +31,17 @@ func ResolveCodexBinary(ctx context.Context, requested string, allowCustom bool)
 
 	isDefaultName := requested == "codex"
 	if !isDefaultName && !allowCustom {
-		return CodexBinary{}, fmt.Errorf("custom codex binary is disabled by default; use --allow-custom-codex-bin for non-production/mock runs")
+		return AIBinary{}, fmt.Errorf("custom ai binary is disabled by default; use --allow-custom-ai-bin for non-production/mock runs")
 	}
 
 	lookedUp, err := exec.LookPath(requested)
 	if err != nil {
-		return CodexBinary{}, fmt.Errorf("resolve codex binary %q: %w", requested, err)
+		return AIBinary{}, fmt.Errorf("resolve ai binary %q: %w", requested, err)
 	}
 
 	absPath, err := filepath.Abs(lookedUp)
 	if err != nil {
-		return CodexBinary{}, fmt.Errorf("resolve absolute codex path: %w", err)
+		return AIBinary{}, fmt.Errorf("resolve absolute ai path: %w", err)
 	}
 
 	resolved := absPath
@@ -51,16 +51,16 @@ func ResolveCodexBinary(ctx context.Context, requested string, allowCustom bool)
 
 	info, err := os.Stat(resolved)
 	if err != nil {
-		return CodexBinary{}, fmt.Errorf("stat codex binary: %w", err)
+		return AIBinary{}, fmt.Errorf("stat ai binary: %w", err)
 	}
 	if info.IsDir() {
-		return CodexBinary{}, fmt.Errorf("codex path is a directory: %s", resolved)
+		return AIBinary{}, fmt.Errorf("ai path is a directory: %s", resolved)
 	}
 	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
-		return CodexBinary{}, fmt.Errorf("codex path is not executable: %s", resolved)
+		return AIBinary{}, fmt.Errorf("ai path is not executable: %s", resolved)
 	}
 	if info.Mode().Perm()&0o022 != 0 {
-		return CodexBinary{}, fmt.Errorf("codex binary is group/world writable and not trusted: %s", resolved)
+		return AIBinary{}, fmt.Errorf("ai binary is group/world writable and not trusted: %s", resolved)
 	}
 	if isDefaultName {
 		cwd, cwdErr := os.Getwd()
@@ -68,7 +68,7 @@ func ResolveCodexBinary(ctx context.Context, requested string, allowCustom bool)
 			cwdAbs, absErr := filepath.Abs(cwd)
 			if absErr == nil {
 				if strings.HasPrefix(resolved, cwdAbs+string(filepath.Separator)) || resolved == cwdAbs {
-					return CodexBinary{}, fmt.Errorf("refusing default codex binary resolved from current workspace: %s", resolved)
+					return AIBinary{}, fmt.Errorf("refusing default ai binary resolved from current workspace: %s", resolved)
 				}
 			}
 		}
@@ -76,15 +76,15 @@ func ResolveCodexBinary(ctx context.Context, requested string, allowCustom bool)
 
 	hash, err := fileSHA256(resolved)
 	if err != nil {
-		return CodexBinary{}, fmt.Errorf("hash codex binary: %w", err)
+		return AIBinary{}, fmt.Errorf("hash ai binary: %w", err)
 	}
 
 	version, err := readVersion(ctx, resolved)
 	if err != nil {
-		return CodexBinary{}, err
+		return AIBinary{}, err
 	}
 
-	return CodexBinary{
+	return AIBinary{
 		RequestedPath: requested,
 		ResolvedPath:  resolved,
 		Version:       version,
@@ -114,15 +114,23 @@ func readVersion(parent context.Context, binPath string) (string, error) {
 	cmd := exec.CommandContext(ctx, binPath, "--version")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("read codex version: %w", err)
+		return "", fmt.Errorf("read ai binary version: %w", err)
 	}
 
 	version := strings.TrimSpace(string(out))
 	if version == "" {
-		return "", fmt.Errorf("codex --version returned empty output")
+		return "", fmt.Errorf("ai --version returned empty output")
 	}
 	if i := strings.IndexByte(version, '\n'); i >= 0 {
 		version = strings.TrimSpace(version[:i])
 	}
 	return version, nil
 }
+
+// ResolveCodexBinary is a compatibility wrapper around ResolveAIBinary.
+func ResolveCodexBinary(ctx context.Context, requested string, allowCustom bool) (AIBinary, error) {
+	return ResolveAIBinary(ctx, requested, allowCustom)
+}
+
+// CodexBinary is a compatibility alias for AIBinary.
+type CodexBinary = AIBinary
