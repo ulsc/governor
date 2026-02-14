@@ -48,7 +48,7 @@ func checkURL(url, current string) Result {
 	if err != nil {
 		return Result{}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return Result{}

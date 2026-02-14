@@ -10,7 +10,7 @@ import (
 func TestNewerVersionAvailable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"tag_name":"v0.2.0"}`))
+		_, _ = w.Write([]byte(`{"tag_name":"v0.2.0"}`))
 	}))
 	defer srv.Close()
 
@@ -23,7 +23,7 @@ func TestNewerVersionAvailable(t *testing.T) {
 func TestSameVersion(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"tag_name":"v0.1.0"}`))
+		_, _ = w.Write([]byte(`{"tag_name":"v0.1.0"}`))
 	}))
 	defer srv.Close()
 
@@ -36,7 +36,7 @@ func TestSameVersion(t *testing.T) {
 func TestOlderOnServer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"tag_name":"v0.0.9"}`))
+		_, _ = w.Write([]byte(`{"tag_name":"v0.0.9"}`))
 	}))
 	defer srv.Close()
 
@@ -61,7 +61,7 @@ func TestServerError(t *testing.T) {
 func TestInvalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`not json`))
+		_, _ = w.Write([]byte(`not json`))
 	}))
 	defer srv.Close()
 
@@ -74,7 +74,7 @@ func TestInvalidJSON(t *testing.T) {
 func TestEmptyTagName(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"tag_name":""}`))
+		_, _ = w.Write([]byte(`{"tag_name":""}`))
 	}))
 	defer srv.Close()
 
