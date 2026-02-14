@@ -100,6 +100,19 @@ make build
 - Go `1.22+`
 - `codex` CLI in `PATH` when using `--ai-provider codex-cli`
 
+### Built-in AI Profiles
+
+Governor includes built-in profiles you can select via `--ai-profile`, including:
+- `codex`, `codex-api`
+- `openai`, `openrouter`, `vercel-ai-gateway`
+- `claude`, `gemini`, `minimax`, `chatglm`
+- `mistral`, `deepseek`, `grok`, `perplexity`, `huggingface`
+- `local-openai` (for local OpenAI-compatible endpoints such as Ollama)
+
+Profiles can be overridden or extended via:
+- `~/.governor/ai/profiles.yaml`
+- `./.governor/ai/profiles.yaml`
+
 ### Build from source
 
 ```bash
