@@ -173,7 +173,7 @@ profiles:
     provider: openai-compatible
     model: gpt-4o
     auth_mode: api-key
-    base_url: https://ai-gateway.internal.company.com/v1
+    base_url: https://ai-gateway.your-company.com/v1
     api_key_env: INTERNAL_AI_KEY
     headers:
       X-Team-ID: security-team
