@@ -15,12 +15,15 @@ import (
 var (
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	helpKeyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
 	headerStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("229"))
 	okStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	warnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	runningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("45"))
 	idleStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	boldStyle    = lipgloss.NewStyle().Bold(true)
 )
 
 type workerState struct {
@@ -154,21 +157,56 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m uiModel) View() string {
 	var b strings.Builder
 
+	// Title
 	b.WriteString(m.render(titleStyle, "Governor Audit"))
 	b.WriteString("\n")
-	if m.runStatus == "running" {
-		b.WriteString(fmt.Sprintf("Active: %s\n", m.render(runningStyle, m.runningFrame())))
-	}
-	b.WriteString(fmt.Sprintf("Run: %s\n", valueOrDash(m.runID)))
-	b.WriteString(fmt.Sprintf("Status: %s\n", m.render(styleStatus(m.runStatus), strings.ToUpper(valueOrDash(m.runStatus)))))
-	b.WriteString(fmt.Sprintf("Findings: %d\n", m.findings))
-	b.WriteString(fmt.Sprintf("Elapsed: %s\n", m.elapsedString()))
 
+	// Run metadata
+	b.WriteString(fmt.Sprintf("  Run:      %s\n", valueOrDash(m.runID)))
+	statusLabel := strings.ToUpper(valueOrDash(m.runStatus))
+	if m.runStatus == "running" {
+		statusLabel += " " + m.runningFrame()
+	}
+	b.WriteString(fmt.Sprintf("  Status:   %s\n", m.render(styleStatus(m.runStatus), statusLabel)))
+	b.WriteString(fmt.Sprintf("  Elapsed:  %s\n", m.elapsedString()))
+	findingsLabel := fmt.Sprintf("%d", m.findings)
+	if m.findings > 0 {
+		findingsLabel = m.render(warnStyle, findingsLabel)
+	}
+	b.WriteString(fmt.Sprintf("  Findings: %s\n", findingsLabel))
+
+	// Progress bar
 	totalWorkers, running, success, warning, failed, pending := m.workerSummary()
-	b.WriteString(fmt.Sprintf("Workers: total=%d running=%d success=%d warning=%d failed=%d pending=%d\n", totalWorkers, running, success, warning, failed, pending))
+	b.WriteString("  ")
+	b.WriteString(m.progressBar(totalWorkers, success, warning, failed, running, pending))
 	b.WriteString("\n")
 
-	b.WriteString(m.render(headerStyle, fmt.Sprintf("%-20s %-12s %-9s %-10s %-3s", "Track", "Status", "Findings", "Duration", "Err")))
+	// Worker summary counts
+	parts := []string{}
+	if running > 0 {
+		parts = append(parts, m.render(runningStyle, fmt.Sprintf("%d running", running)))
+	}
+	if success > 0 {
+		parts = append(parts, m.render(okStyle, fmt.Sprintf("%d ok", success)))
+	}
+	if warning > 0 {
+		parts = append(parts, m.render(warnStyle, fmt.Sprintf("%d warn", warning)))
+	}
+	if failed > 0 {
+		parts = append(parts, m.render(errorStyle, fmt.Sprintf("%d fail", failed)))
+	}
+	if pending > 0 {
+		parts = append(parts, m.render(idleStyle, fmt.Sprintf("%d pending", pending)))
+	}
+	if len(parts) > 0 {
+		b.WriteString("  ")
+		b.WriteString(strings.Join(parts, m.render(dimStyle, " | ")))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	// Worker table
+	b.WriteString(m.render(headerStyle, fmt.Sprintf("  %-20s %-12s %-9s %-10s %s", "TRACK", "STATUS", "FINDS", "DURATION", "ERR")))
 	b.WriteString("\n")
 
 	for idx, track := range m.orderedTracks() {
@@ -179,29 +217,47 @@ func (m uiModel) View() string {
 		}
 		displayStatus := m.workerStatusDisplay(baseStatus, idx)
 		durationMS := m.workerDurationMS(w, baseStatus)
-		errBadge := "-"
+		errBadge := m.render(dimStyle, "-")
 		if strings.TrimSpace(w.Error) != "" {
-			errBadge = "!"
+			errBadge = m.render(errorStyle, "!")
 		}
-		line := fmt.Sprintf("%-20s %-12s %-9d %-10s %-3s", track, displayStatus, w.FindingCount, durationString(durationMS), errBadge)
-		b.WriteString(m.render(styleStatus(baseStatus), line))
+		findingStr := fmt.Sprintf("%d", w.FindingCount)
+		if w.FindingCount > 0 && baseStatus != "running" {
+			findingStr = m.render(warnStyle, findingStr)
+		}
+		trackName := track
+		line := fmt.Sprintf("  %-20s %-12s %-9s %-10s %s",
+			trackName,
+			m.render(styleStatus(baseStatus), displayStatus),
+			findingStr,
+			durationString(durationMS),
+			errBadge,
+		)
+		b.WriteString(line)
 		b.WriteString("\n")
 	}
 
+	// Completion banner
+	if m.done {
+		b.WriteString("\n")
+		b.WriteString(m.completionBanner())
+	}
+
+	// Event log
 	if m.showDetails {
 		b.WriteString("\n")
 		eventTitle := "Recent Events"
 		if m.pauseEvents {
-			eventTitle += " [paused]"
+			eventTitle += " " + m.render(warnStyle, "[paused]")
 		}
 		if strings.TrimSpace(m.eventFilter) != "" {
-			eventTitle += " filter=" + m.eventFilter
+			eventTitle += " " + m.render(runningStyle, "filter="+m.eventFilter)
 		}
 		b.WriteString(m.render(headerStyle, eventTitle))
 		b.WriteString("\n")
 		lines := m.visibleEventLines()
 		if len(lines) == 0 {
-			b.WriteString(m.render(idleStyle, "No events yet."))
+			b.WriteString(m.render(idleStyle, "  No events yet."))
 			b.WriteString("\n")
 		} else {
 			limit := m.eventPanelHeight()
@@ -211,18 +267,18 @@ func (m uiModel) View() string {
 				if severity == "" {
 					severity = "INFO"
 				}
-				prefix := fmt.Sprintf("[%s] [%s]", line.At.Format("15:04:05"), severity)
+				prefix := fmt.Sprintf("  %s %s", m.render(dimStyle, line.At.Format("15:04:05")), m.severityBadge(severity))
 				if strings.TrimSpace(line.Track) != "" {
-					prefix += " [" + line.Track + "]"
+					prefix += " " + m.render(dimStyle, line.Track)
 				}
 				rendered := prefix + " " + line.Text
 				switch strings.ToLower(strings.TrimSpace(line.Severity)) {
 				case "error":
-					rendered = m.render(errorStyle, rendered)
+					rendered = prefix + " " + m.render(errorStyle, line.Text)
 				case "warning":
-					rendered = m.render(warnStyle, rendered)
+					rendered = prefix + " " + m.render(warnStyle, line.Text)
 				default:
-					rendered = m.render(idleStyle, rendered)
+					rendered = prefix + " " + m.render(idleStyle, line.Text)
 				}
 				b.WriteString(rendered)
 				b.WriteString("\n")
@@ -230,11 +286,12 @@ func (m uiModel) View() string {
 		}
 	}
 
+	// Help bar
 	b.WriteString("\n")
 	if m.done {
-		b.WriteString(m.render(helpStyle, "Press q to close | d details | p pause events | f filter track"))
+		b.WriteString(m.renderHelp([][2]string{{"q", "close"}, {"d", "details"}, {"p", "pause"}, {"f", "filter"}}))
 	} else {
-		b.WriteString(m.render(helpStyle, "d toggle details | p pause events | f filter track"))
+		b.WriteString(m.renderHelp([][2]string{{"d", "details"}, {"p", "pause"}, {"f", "filter"}}))
 	}
 	b.WriteString("\n")
 
@@ -410,11 +467,134 @@ func styleStatus(status string) lipgloss.Style {
 }
 
 func (m uiModel) runningFrame() string {
-	frames := []string{"-", "\\", "|", "/"}
+	frames := []string{"\u28F7", "\u28EF", "\u28DF", "\u28BF", "\u287F", "\u28FE", "\u28FD", "\u28FB"}
 	if len(frames) == 0 {
 		return "."
 	}
 	return frames[m.tick%len(frames)]
+}
+
+func (m uiModel) progressBar(total, success, warning, failed, running, pending int) string {
+	if total == 0 {
+		return m.render(dimStyle, "[no workers]")
+	}
+	barWidth := 30
+	if m.width < 60 {
+		barWidth = 15
+	}
+
+	done := success + warning + failed
+	pct := 0
+	if total > 0 {
+		pct = (done * 100) / total
+	}
+
+	filled := 0
+	if total > 0 {
+		filled = (done * barWidth) / total
+	}
+	if filled > barWidth {
+		filled = barWidth
+	}
+
+	bar := strings.Repeat("\u2588", filled) + strings.Repeat("\u2591", barWidth-filled)
+	pctStr := fmt.Sprintf("%3d%%", pct)
+
+	if m.noColor {
+		return fmt.Sprintf("[%s] %s (%d/%d)", bar, pctStr, done, total)
+	}
+
+	coloredBar := ""
+	pos := 0
+	// Green for success
+	successCells := 0
+	if total > 0 {
+		successCells = (success * barWidth) / total
+	}
+	if successCells > 0 {
+		coloredBar += okStyle.Render(strings.Repeat("\u2588", successCells))
+		pos += successCells
+	}
+	// Yellow for warning
+	warnCells := 0
+	if total > 0 {
+		warnCells = (warning * barWidth) / total
+	}
+	if warnCells > 0 {
+		coloredBar += warnStyle.Render(strings.Repeat("\u2588", warnCells))
+		pos += warnCells
+	}
+	// Red for failed
+	failCells := 0
+	if total > 0 {
+		failCells = (failed * barWidth) / total
+	}
+	if failCells > 0 {
+		coloredBar += errorStyle.Render(strings.Repeat("\u2588", failCells))
+		pos += failCells
+	}
+	// Remaining filled (rounding)
+	if pos < filled {
+		coloredBar += okStyle.Render(strings.Repeat("\u2588", filled-pos))
+	}
+	// Unfilled
+	if filled < barWidth {
+		coloredBar += dimStyle.Render(strings.Repeat("\u2591", barWidth-filled))
+	}
+
+	return fmt.Sprintf("[%s] %s (%d/%d)", coloredBar, pctStr, done, total)
+}
+
+func (m uiModel) completionBanner() string {
+	_, _, success, warning, failed, _ := m.workerSummary()
+	var style lipgloss.Style
+	var icon string
+	if failed > 0 {
+		style = errorStyle
+		icon = "FAILED"
+	} else if warning > 0 {
+		style = warnStyle
+		icon = "COMPLETED WITH WARNINGS"
+	} else if success > 0 {
+		style = okStyle
+		icon = "COMPLETED"
+	} else {
+		style = idleStyle
+		icon = "DONE"
+	}
+	banner := fmt.Sprintf("  %s  %d findings in %s", icon, m.findings, m.elapsedString())
+	if m.runError != "" {
+		banner += "  error: " + m.runError
+	}
+	return m.render(style, banner) + "\n"
+}
+
+func (m uiModel) severityBadge(severity string) string {
+	padded := fmt.Sprintf("%-5s", severity)
+	switch strings.ToUpper(strings.TrimSpace(severity)) {
+	case "ERROR":
+		return m.render(errorStyle, padded)
+	case "WARN", "WARNING":
+		return m.render(warnStyle, padded)
+	default:
+		return m.render(idleStyle, padded)
+	}
+}
+
+func (m uiModel) renderHelp(keys [][2]string) string {
+	parts := make([]string, 0, len(keys))
+	for _, kv := range keys {
+		if m.noColor {
+			parts = append(parts, kv[0]+" "+kv[1])
+		} else {
+			parts = append(parts, helpKeyStyle.Render(kv[0])+" "+helpStyle.Render(kv[1]))
+		}
+	}
+	sep := m.render(dimStyle, " \u2502 ")
+	if m.noColor {
+		sep = " | "
+	}
+	return strings.Join(parts, sep)
 }
 
 func (m uiModel) workerStatusDisplay(status string, idx int) string {
@@ -425,7 +605,7 @@ func (m uiModel) workerStatusDisplay(status string, idx int) string {
 }
 
 func (m uiModel) workerFrame(idx int) string {
-	frames := []string{"-", "\\", "|", "/"}
+	frames := []string{"\u28F7", "\u28EF", "\u28DF", "\u28BF", "\u287F", "\u28FE", "\u28FD", "\u28FB"}
 	if len(frames) == 0 {
 		return "."
 	}

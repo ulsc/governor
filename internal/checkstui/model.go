@@ -69,7 +69,7 @@ func newModel(opts Options) (uiModel, error) {
 		showDetails:  true,
 		width:        120,
 		height:       36,
-		message:      "q quit | / search | s status | o source | 1..5 sort | e/d status | n duplicate | p path | h details | r refresh",
+		message:      "q quit | / search | x clear | s status | o source | 1-5 sort | e enable | d disable | n dup | p path | h detail | r reload",
 	}
 	m.rebuildFiltered()
 	return m, nil
