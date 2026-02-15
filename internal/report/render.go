@@ -393,6 +393,9 @@ func RenderHTML(report model.AuditReport) string {
 	b.WriteString(fmt.Sprintf("        <div class=\"stat-card medium\"><p class=\"label\">Medium</p><p class=\"value\">%d</p></div>\n", report.CountsBySeverity["medium"]))
 	b.WriteString(fmt.Sprintf("        <div class=\"stat-card low\"><p class=\"label\">Low</p><p class=\"value\">%d</p></div>\n", report.CountsBySeverity["low"]))
 	b.WriteString(fmt.Sprintf("        <div class=\"stat-card info\"><p class=\"label\">Info</p><p class=\"value\">%d</p></div>\n", report.CountsBySeverity["info"]))
+	if report.SuppressedCount > 0 {
+		b.WriteString(fmt.Sprintf("        <div class=\"stat-card\"><p class=\"label\">Suppressed</p><p class=\"value\">%d</p></div>\n", report.SuppressedCount))
+	}
 	b.WriteString("      </div>\n")
 	b.WriteString("    </section>\n")
 
@@ -608,6 +611,9 @@ func RenderMarkdown(report model.AuditReport) string {
 		}
 	}
 	b.WriteString(fmt.Sprintf("- Total findings: **%d**\n", len(report.Findings)))
+	if report.SuppressedCount > 0 {
+		b.WriteString(fmt.Sprintf("- Suppressed findings: %d\n", report.SuppressedCount))
+	}
 	b.WriteString(fmt.Sprintf("- Severity: critical=%d, high=%d, medium=%d, low=%d, info=%d\n\n",
 		report.CountsBySeverity["critical"],
 		report.CountsBySeverity["high"],
@@ -700,6 +706,17 @@ func redactReport(in model.AuditReport) model.AuditReport {
 			findings = append(findings, f)
 		}
 		in.Findings = findings
+	}
+	if len(in.SuppressedFindings) > 0 {
+		suppressed := make([]model.Finding, 0, len(in.SuppressedFindings))
+		for _, f := range in.SuppressedFindings {
+			f.Title = redact.Text(f.Title)
+			f.Evidence = redact.Text(f.Evidence)
+			f.Impact = redact.Text(f.Impact)
+			f.Remediation = redact.Text(f.Remediation)
+			suppressed = append(suppressed, f)
+		}
+		in.SuppressedFindings = suppressed
 	}
 	if len(in.WorkerSummaries) > 0 {
 		workers := make([]model.WorkerResult, 0, len(in.WorkerSummaries))

@@ -26,6 +26,10 @@ type Finding struct {
 	OWASP       string    `json:"owasp,omitempty"`
 	SourceTrack string    `json:"source_track"`
 	CreatedAt   time.Time `json:"created_at,omitempty"`
+
+	Suppressed        bool   `json:"suppressed,omitempty"`
+	SuppressionReason string `json:"suppression_reason,omitempty"`
+	SuppressionSource string `json:"suppression_source,omitempty"`
 }
 
 type WorkerResult struct {
@@ -97,11 +101,13 @@ type InputSummary struct {
 }
 
 type AuditReport struct {
-	RunMetadata      RunMetadata    `json:"run_metadata"`
-	InputSummary     InputSummary   `json:"input_summary"`
-	Findings         []Finding      `json:"findings"`
-	CountsBySeverity map[string]int `json:"counts_by_severity"`
-	CountsByCategory map[string]int `json:"counts_by_category"`
-	WorkerSummaries  []WorkerResult `json:"worker_summaries"`
-	Errors           []string       `json:"errors,omitempty"`
+	RunMetadata        RunMetadata    `json:"run_metadata"`
+	InputSummary       InputSummary   `json:"input_summary"`
+	Findings           []Finding      `json:"findings"`
+	SuppressedFindings []Finding      `json:"suppressed_findings,omitempty"`
+	SuppressedCount    int            `json:"suppressed_count,omitempty"`
+	CountsBySeverity   map[string]int `json:"counts_by_severity"`
+	CountsByCategory   map[string]int `json:"counts_by_category"`
+	WorkerSummaries    []WorkerResult `json:"worker_summaries"`
+	Errors             []string       `json:"errors,omitempty"`
 }

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,16 +15,21 @@ import (
 	"time"
 
 	"github.com/mattn/go-isatty"
+	"gopkg.in/yaml.v3"
 	"governor/internal/ai"
 	"governor/internal/app"
 	"governor/internal/checks"
 	"governor/internal/checkstui"
+	"governor/internal/comment"
 	"governor/internal/config"
+	"governor/internal/diff"
 	"governor/internal/extractor"
 	"governor/internal/intake"
 	"governor/internal/isolation"
 	"governor/internal/model"
 	"governor/internal/progress"
+	"governor/internal/safefile"
+	"governor/internal/suppress"
 	"governor/internal/trust"
 	"governor/internal/tui"
 	"governor/internal/update"
@@ -39,6 +45,10 @@ func Execute(args []string) error {
 	switch args[0] {
 	case "audit":
 		return runAudit(args[1:])
+	case "ci":
+		return runCI(args[1:])
+	case "findings":
+		return runFindings(args[1:])
 	case "isolate":
 		return runIsolate(args[1:])
 	case "checks":
@@ -100,6 +110,8 @@ func runAudit(args []string) error {
 	allowExistingOutDir := fs.Bool("allow-existing-out-dir", false, "Allow using an existing empty output directory (internal use)")
 	sandboxDenyHostFallback := fs.Bool("sandbox-deny-host-fallback", false, "Automatically rerun tracks in host mode when sandbox denies file access (internal use)")
 	includeTestFiles := fs.Bool("include-test-files", false, "Include test files in security scanning (excluded by default)")
+	suppressionsPath := fs.String("suppressions", "", "Path to suppressions YAML file (default ./.governor/suppressions.yaml if present)")
+	showSuppressed := fs.Bool("show-suppressed", false, "Include suppressed findings in reports")
 
 	var onlyChecks listFlag
 	var skipChecks listFlag
@@ -124,6 +136,14 @@ func runAudit(args []string) error {
 		// valid
 	default:
 		return usageError("usage: governor audit <path-or-zip> [flags]")
+	}
+
+	// Resolve suppressions path: explicit flag > default location.
+	if strings.TrimSpace(*suppressionsPath) == "" {
+		defaultSuppPath := suppress.DefaultPath(".")
+		if _, statErr := os.Stat(defaultSuppPath); statErr == nil {
+			*suppressionsPath = defaultSuppPath
+		}
 	}
 
 	cfg, cfgErr := config.Load()
@@ -265,6 +285,8 @@ func runAudit(args []string) error {
 		SandboxDenyHostFallback: *sandboxDenyHostFallback,
 
 		BaselinePath:     strings.TrimSpace(*baseline),
+		SuppressionsPath: strings.TrimSpace(*suppressionsPath),
+		ShowSuppressed:   *showSuppressed,
 		IncludeTestFiles: *includeTestFiles,
 	}
 
@@ -538,6 +560,9 @@ func printAuditSummary(report model.AuditReport, paths app.ArtifactPaths) {
 		report.CountsBySeverity["low"],
 		report.CountsBySeverity["info"],
 	)
+	if report.SuppressedCount > 0 {
+		fmt.Printf("suppressed:     %d\n", report.SuppressedCount)
+	}
 
 	for _, ws := range report.WorkerSummaries {
 		fmt.Printf("worker %-24s status=%-9s findings=%d duration=%dms\n", ws.Track, ws.Status, ws.FindingCount, ws.DurationMS)
@@ -1714,6 +1739,9 @@ func runInit(args []string) error {
 !.gitignore
 !checks/
 !checks/**
+!suppressions.yaml
+!baseline.json
+!config.yaml
 
 # Always ignore generated run artifacts.
 runs/
@@ -1876,6 +1904,416 @@ func clearRuns(runsDir string, keep int) ([]string, error) {
 	return removed, nil
 }
 
+func runCI(args []string) error {
+	fs := flag.NewFlagSet("ci", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	failOn := fs.String("fail-on", "high", "Exit non-zero if any new finding meets or exceeds severity: critical|high|medium|low|info")
+	commentFile := fs.String("comment-file", "", "Write PR comment markdown to file")
+	updateBaseline := fs.Bool("update-baseline", false, "Write findings as baseline after audit")
+	baselineFile := fs.String("baseline-file", ".governor/baseline.json", "Baseline file path")
+	out := fs.String("out", "", "Output directory for run artifacts")
+	workers := fs.Int("workers", 3, "Max concurrent worker processes (1-3)")
+	aiProfile := fs.String("ai-profile", "codex", "AI profile name")
+	aiProvider := fs.String("ai-provider", "", "AI provider override")
+	aiModel := fs.String("ai-model", "", "AI model override")
+	aiAuthMode := fs.String("ai-auth-mode", "", "AI auth override")
+	aiBaseURL := fs.String("ai-base-url", "", "AI base URL override")
+	aiAPIKeyEnv := fs.String("ai-api-key-env", "", "AI API key env override")
+	var aiBin string
+	fs.StringVar(&aiBin, "ai-bin", "codex", "AI CLI executable path")
+	var allowCustomAIBin bool
+	fs.BoolVar(&allowCustomAIBin, "allow-custom-ai-bin", false, "Allow non-default AI binary path")
+	executionMode := fs.String("execution-mode", "sandboxed", "AI execution mode: sandboxed|host")
+	var aiSandbox string
+	fs.StringVar(&aiSandbox, "ai-sandbox", "read-only", "AI sandbox mode")
+	maxFiles := fs.Int("max-files", 20000, "Maximum included file count")
+	maxBytes := fs.Int64("max-bytes", 250*1024*1024, "Maximum included file bytes")
+	timeout := fs.Duration("timeout", 4*time.Minute, "Per-worker timeout")
+	verbose := fs.Bool("verbose", false, "Enable verbose logs")
+	checksDir := fs.String("checks-dir", "", "Checks directory")
+	noCustomChecks := fs.Bool("no-custom-checks", false, "Run built-in checks only")
+	suppressionsPath := fs.String("suppressions", "", "Path to suppressions YAML file")
+	showSuppressed := fs.Bool("show-suppressed", false, "Include suppressed findings in reports")
+	includeTestFiles := fs.Bool("include-test-files", false, "Include test files in security scanning")
+
+	var onlyChecks listFlag
+	var skipChecks listFlag
+	fs.Var(&onlyChecks, "only-check", "Only run specific check ID(s)")
+	fs.Var(&skipChecks, "skip-check", "Skip specific check ID(s)")
+
+	var positionalInput string
+	parseArgs := args
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		positionalInput = args[0]
+		parseArgs = args[1:]
+	}
+
+	if err := fs.Parse(parseArgs); err != nil {
+		return err
+	}
+	remaining := fs.Args()
+	switch {
+	case positionalInput == "" && len(remaining) == 1:
+		positionalInput = remaining[0]
+	case positionalInput != "" && len(remaining) == 0:
+		// valid
+	case positionalInput == "" && len(remaining) == 0:
+		positionalInput = "."
+	default:
+		return usageError("usage: governor ci [<path>] [flags]")
+	}
+
+	if *workers < 1 || *workers > 3 {
+		return errors.New("--workers must be between 1 and 3")
+	}
+
+	modeValue, err := normalizeExecutionModeFlag(*executionMode)
+	if err != nil {
+		return err
+	}
+	sandboxValue, err := normalizeSandboxModeFlag(aiSandbox)
+	if err != nil {
+		return err
+	}
+	if modeValue == "host" {
+		sandboxValue = ""
+	}
+
+	selection, err := checks.ResolveAuditSelection(checks.AuditSelectionOptions{
+		ChecksDir:      *checksDir,
+		NoCustomChecks: *noCustomChecks,
+		OnlyIDs:        onlyChecks.Values(),
+		SkipIDs:        skipChecks.Values(),
+	})
+	if err != nil {
+		return err
+	}
+	aiRequired := checks.SelectionRequiresAI(selection.Checks)
+	aiRuntime, err := ai.ResolveRuntime(ai.ResolveOptions{
+		Profile:       strings.TrimSpace(*aiProfile),
+		Provider:      strings.TrimSpace(*aiProvider),
+		Model:         strings.TrimSpace(*aiModel),
+		AuthMode:      strings.TrimSpace(*aiAuthMode),
+		Bin:           strings.TrimSpace(aiBin),
+		BaseURL:       strings.TrimSpace(*aiBaseURL),
+		APIKeyEnv:     strings.TrimSpace(*aiAPIKeyEnv),
+		ExecutionMode: modeValue,
+		SandboxMode:   sandboxValue,
+	})
+	if err != nil {
+		return err
+	}
+
+	aiInfo := trust.AIBinary{}
+	if aiRequired && aiRuntime.UsesCLI() {
+		aiInfo, err = trust.ResolveAIBinary(context.Background(), aiRuntime.Bin, allowCustomAIBin)
+		if err != nil {
+			return err
+		}
+		aiRuntime.Bin = aiInfo.ResolvedPath
+	}
+
+	// Resolve suppressions path.
+	if strings.TrimSpace(*suppressionsPath) == "" {
+		defaultSuppPath := suppress.DefaultPath(".")
+		if _, statErr := os.Stat(defaultSuppPath); statErr == nil {
+			*suppressionsPath = defaultSuppPath
+		}
+	}
+
+	// Detect baseline.
+	baselinePath := strings.TrimSpace(*baselineFile)
+	if _, statErr := os.Stat(baselinePath); statErr != nil {
+		baselinePath = "" // no baseline available
+	}
+
+	auditOpts := app.AuditOptions{
+		InputPath:     positionalInput,
+		OutDir:        *out,
+		AIRuntime:     aiRuntime,
+		AIBin:         aiInfo.ResolvedPath,
+		AIVersion:     aiInfo.Version,
+		AISHA256:      aiInfo.SHA256,
+		AIRequest:     aiInfo.RequestedPath,
+		Workers:       *workers,
+		MaxFiles:      *maxFiles,
+		MaxBytes:      *maxBytes,
+		Timeout:       *timeout,
+		Verbose:       *verbose,
+		ExecutionMode: modeValue,
+		SandboxMode:   sandboxValue,
+
+		ChecksDir:        *checksDir,
+		NoCustomChecks:   *noCustomChecks,
+		OnlyChecks:       onlyChecks.Values(),
+		SkipChecks:       skipChecks.Values(),
+		BaselinePath:     baselinePath,
+		SuppressionsPath: strings.TrimSpace(*suppressionsPath),
+		ShowSuppressed:   *showSuppressed,
+		IncludeTestFiles: *includeTestFiles,
+	}
+
+	auditOpts.Progress = progress.NewPlainSink(os.Stderr)
+	report, paths, err := app.RunAudit(context.Background(), auditOpts)
+	if err != nil {
+		os.Exit(2)
+	}
+	printAuditSummary(report, paths)
+
+	// Generate PR comment if requested.
+	if strings.TrimSpace(*commentFile) != "" {
+		var diffReport *diff.DiffReport
+		if baselinePath != "" && paths.DiffPath != "" {
+			raw, readErr := os.ReadFile(paths.DiffPath)
+			if readErr == nil {
+				var dr diff.DiffReport
+				if jsonErr := json.Unmarshal(raw, &dr); jsonErr == nil {
+					diffReport = &dr
+				}
+			}
+		}
+		commentMD := comment.Generate(report, diffReport, comment.Options{ShowSuppressed: *showSuppressed})
+		if writeErr := safefile.WriteFileAtomic(*commentFile, []byte(commentMD), 0o600); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: write comment file: %v\n", writeErr)
+		}
+	}
+
+	// Update baseline if requested.
+	if *updateBaseline {
+		baselineData, marshalErr := json.MarshalIndent(report, "", "  ")
+		if marshalErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: marshal baseline: %v\n", marshalErr)
+		} else {
+			baselineDir := filepath.Dir(*baselineFile)
+			if mkdirErr := os.MkdirAll(baselineDir, 0o700); mkdirErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: create baseline dir: %v\n", mkdirErr)
+			} else if writeErr := safefile.WriteFileAtomic(*baselineFile, baselineData, 0o600); writeErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: write baseline: %v\n", writeErr)
+			} else {
+				fmt.Printf("baseline:       %s\n", *baselineFile)
+			}
+		}
+	}
+
+	// CI exit codes: 0=pass, 1=findings exceed threshold, 2=audit error (handled above).
+	failErr := checkFailOn(*failOn, report)
+	if failErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", failErr)
+		os.Exit(1)
+	}
+	return nil
+}
+
+func runFindings(args []string) error {
+	if len(args) == 0 {
+		return usageError("usage: governor findings <suppress|list|expired>")
+	}
+	switch args[0] {
+	case "suppress":
+		return runFindingsSuppress(args[1:])
+	case "list":
+		return runFindingsList(args[1:])
+	case "expired":
+		return runFindingsExpired(args[1:])
+	default:
+		return usageError(fmt.Sprintf("unknown findings subcommand %q", args[0]))
+	}
+}
+
+func runFindingsSuppress(args []string) error {
+	fs := flag.NewFlagSet("findings suppress", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	reason := fs.String("reason", "", "Reason for suppression (required)")
+	check := fs.String("check", "", "Check ID to suppress")
+	category := fs.String("category", "", "Category to suppress")
+	files := fs.String("files", "", "File glob pattern to suppress")
+	severity := fs.String("severity", "", "Severity to suppress")
+	author := fs.String("author", "", "Author of suppression")
+	expires := fs.String("expires", "", "Expiration date (YYYY-MM-DD)")
+	suppressionsPath := fs.String("suppressions", "", "Path to suppressions file (default ./.governor/suppressions.yaml)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// Positional arg is the title pattern.
+	var titlePattern string
+	if len(fs.Args()) > 0 {
+		titlePattern = strings.Join(fs.Args(), " ")
+	}
+
+	if strings.TrimSpace(*reason) == "" {
+		return errors.New("--reason is required")
+	}
+	if titlePattern == "" && *check == "" && *category == "" && *files == "" && *severity == "" {
+		return errors.New("at least one matching criterion is required (title pattern, --check, --category, --files, or --severity)")
+	}
+
+	path := strings.TrimSpace(*suppressionsPath)
+	if path == "" {
+		path = suppress.DefaultPath(".")
+	}
+
+	// Load existing suppressions.
+	rules, loadErr := suppress.Load(path)
+	if loadErr != nil && !os.IsNotExist(loadErr) {
+		return fmt.Errorf("load suppressions: %w", loadErr)
+	}
+
+	// Add new rule.
+	newRule := suppress.Rule{
+		Check:    strings.TrimSpace(*check),
+		Title:    strings.TrimSpace(titlePattern),
+		Category: strings.TrimSpace(*category),
+		Files:    strings.TrimSpace(*files),
+		Severity: strings.TrimSpace(*severity),
+		Reason:   strings.TrimSpace(*reason),
+		Author:   strings.TrimSpace(*author),
+		Expires:  strings.TrimSpace(*expires),
+	}
+	rules = append(rules, newRule)
+
+	// Write back.
+	sf := suppressionsFile{Suppressions: rules}
+	data, marshalErr := marshalSuppressionsYAML(sf)
+	if marshalErr != nil {
+		return marshalErr
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create suppressions dir: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write suppressions: %w", err)
+	}
+
+	fmt.Printf("added suppression to %s\n", path)
+	return nil
+}
+
+type suppressionsFile struct {
+	Suppressions []suppress.Rule `yaml:"suppressions"`
+}
+
+func marshalSuppressionsYAML(sf suppressionsFile) ([]byte, error) {
+	b, err := marshalYAML(sf)
+	if err != nil {
+		return nil, fmt.Errorf("marshal suppressions: %w", err)
+	}
+	return b, nil
+}
+
+func marshalYAML(v interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func runFindingsList(args []string) error {
+	fs := flag.NewFlagSet("findings list", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	suppressionsPath := fs.String("suppressions", "", "Path to suppressions file (default ./.governor/suppressions.yaml)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	path := strings.TrimSpace(*suppressionsPath)
+	if path == "" {
+		path = suppress.DefaultPath(".")
+	}
+
+	rules, err := suppress.Load(path)
+	if err != nil {
+		return fmt.Errorf("load suppressions: %w", err)
+	}
+	if len(rules) == 0 {
+		fmt.Println("no active suppressions")
+		return nil
+	}
+
+	fmt.Printf("suppressions from %s:\n\n", path)
+	for i, r := range rules {
+		fmt.Printf("[%d] ", i+1)
+		if r.Check != "" {
+			fmt.Printf("check=%s ", r.Check)
+		}
+		if r.Title != "" {
+			fmt.Printf("title=%q ", r.Title)
+		}
+		if r.Category != "" {
+			fmt.Printf("category=%s ", r.Category)
+		}
+		if r.Files != "" {
+			fmt.Printf("files=%s ", r.Files)
+		}
+		if r.Severity != "" {
+			fmt.Printf("severity=%s ", r.Severity)
+		}
+		fmt.Println()
+		fmt.Printf("    reason: %s\n", r.Reason)
+		if r.Author != "" {
+			fmt.Printf("    author: %s\n", r.Author)
+		}
+		if r.Expires != "" {
+			fmt.Printf("    expires: %s\n", r.Expires)
+		}
+	}
+	return nil
+}
+
+func runFindingsExpired(args []string) error {
+	fs := flag.NewFlagSet("findings expired", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	suppressionsPath := fs.String("suppressions", "", "Path to suppressions file (default ./.governor/suppressions.yaml)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	path := strings.TrimSpace(*suppressionsPath)
+	if path == "" {
+		path = suppress.DefaultPath(".")
+	}
+
+	rules, err := suppress.Load(path)
+	if err != nil {
+		return fmt.Errorf("load suppressions: %w", err)
+	}
+
+	now := time.Now().UTC()
+	expired := make([]suppress.Rule, 0)
+	for _, r := range rules {
+		if r.IsExpired(now) {
+			expired = append(expired, r)
+		}
+	}
+
+	if len(expired) == 0 {
+		fmt.Println("no expired suppressions")
+		return nil
+	}
+
+	fmt.Printf("%d expired suppression(s):\n\n", len(expired))
+	for _, r := range expired {
+		if r.Title != "" {
+			fmt.Printf("- title=%q", r.Title)
+		}
+		if r.Check != "" {
+			fmt.Printf(" check=%s", r.Check)
+		}
+		fmt.Printf(" expires=%s reason=%q\n", r.Expires, r.Reason)
+	}
+	return nil
+}
+
 func printUsage() {
 	fmt.Println("Governor CLI")
 	fmt.Println("")
@@ -1883,6 +2321,8 @@ func printUsage() {
 	fmt.Println("  governor version")
 	fmt.Println("  governor init [flags]")
 	fmt.Println("  governor audit <path-or-zip> [flags]")
+	fmt.Println("  governor ci [<path>] [flags]")
+	fmt.Println("  governor findings <suppress|list|expired> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
 	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable>] [flags]")
 	fmt.Println("  governor clear [--without-last [N]]")
@@ -1915,8 +2355,27 @@ func printUsage() {
 	fmt.Println("  --tui               Enable interactive terminal UI")
 	fmt.Println("  --fail-on <sev>     Exit non-zero if findings meet/exceed severity (critical|high|medium|low|info)")
 	fmt.Println("  --baseline <path>   Compare against a previous audit.json for diff report")
+	fmt.Println("  --suppressions <path>  Suppressions YAML file (default ./.governor/suppressions.yaml)")
+	fmt.Println("  --show-suppressed   Include suppressed findings in reports")
 	fmt.Println("  --include-test-files  Include test files in security scanning (excluded by default)")
 	fmt.Println("  --no-tui            Disable interactive terminal UI")
+	fmt.Println("")
+	fmt.Println("Flags (ci):")
+	fmt.Println("  --fail-on <sev>     Exit non-zero threshold (default high)")
+	fmt.Println("  --comment-file <path>  Write PR comment markdown to file")
+	fmt.Println("  --update-baseline   Write findings as .governor/baseline.json after audit")
+	fmt.Println("  --baseline-file <path>  Baseline file path (default .governor/baseline.json)")
+	fmt.Println("  (also accepts most audit flags: --workers, --ai-*, --checks-dir, etc.)")
+	fmt.Println("")
+	fmt.Println("Flags (findings suppress):")
+	fmt.Println("  <title-pattern>     Title glob pattern (positional)")
+	fmt.Println("  --reason <text>     Reason for suppression (required)")
+	fmt.Println("  --check <id>        Check ID to suppress")
+	fmt.Println("  --category <cat>    Category to suppress")
+	fmt.Println("  --files <glob>      File glob pattern")
+	fmt.Println("  --severity <sev>    Severity to suppress")
+	fmt.Println("  --author <email>    Author of suppression")
+	fmt.Println("  --expires <date>    Expiration date (YYYY-MM-DD)")
 	fmt.Println("")
 	fmt.Println("Flags (isolate audit):")
 	fmt.Println("  --out <dir>         Output directory for artifacts (default ./.governor/runs/<timestamp>)")

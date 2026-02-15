@@ -45,11 +45,17 @@ type sarifDefaultConfig struct {
 }
 
 type sarifResult struct {
-	RuleID    string           `json:"ruleId"`
-	Level     string           `json:"level"`
-	Message   sarifMessage     `json:"message"`
-	Locations []sarifLocation  `json:"locations,omitempty"`
-	Properties *sarifProperties `json:"properties,omitempty"`
+	RuleID       string              `json:"ruleId"`
+	Level        string              `json:"level"`
+	Message      sarifMessage        `json:"message"`
+	Locations    []sarifLocation     `json:"locations,omitempty"`
+	Suppressions []sarifSuppression  `json:"suppressions,omitempty"`
+	Properties   *sarifProperties    `json:"properties,omitempty"`
+}
+
+type sarifSuppression struct {
+	Kind          string `json:"kind"`
+	Justification string `json:"justification,omitempty"`
 }
 
 type sarifMessage struct {
@@ -93,7 +99,12 @@ func buildSARIF(report model.AuditReport) sarifLog {
 	var rules []sarifRule
 	var results []sarifResult
 
-	for _, f := range report.Findings {
+	// Include both active and suppressed findings in SARIF output.
+	allFindings := make([]model.Finding, 0, len(report.Findings)+len(report.SuppressedFindings))
+	allFindings = append(allFindings, report.Findings...)
+	allFindings = append(allFindings, report.SuppressedFindings...)
+
+	for _, f := range allFindings {
 		ruleID := f.ID
 		if ruleID == "" {
 			ruleID = "governor-finding"
@@ -131,7 +142,7 @@ func buildSARIF(report model.AuditReport) sarifLog {
 			})
 		}
 
-		results = append(results, sarifResult{
+		result := sarifResult{
 			RuleID:    ruleID,
 			Level:     level,
 			Message:   sarifMessage{Text: messageText},
@@ -142,7 +153,16 @@ func buildSARIF(report model.AuditReport) sarifLog {
 				Confidence: f.Confidence,
 				Impact:     f.Impact,
 			},
-		})
+		}
+
+		if f.Suppressed {
+			result.Suppressions = []sarifSuppression{{
+				Kind:          "inSource",
+				Justification: f.SuppressionReason,
+			}}
+		}
+
+		results = append(results, result)
 	}
 
 	return sarifLog{

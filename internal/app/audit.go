@@ -20,6 +20,7 @@ import (
 	"governor/internal/redact"
 	reportpkg "governor/internal/report"
 	"governor/internal/safefile"
+	"governor/internal/suppress"
 	"governor/internal/worker"
 )
 
@@ -49,8 +50,10 @@ type AuditOptions struct {
 
 	SandboxDenyHostFallback bool
 
-	BaselinePath     string
-	IncludeTestFiles bool
+	BaselinePath      string
+	SuppressionsPath  string
+	ShowSuppressed    bool
+	IncludeTestFiles  bool
 }
 
 type ArtifactPaths struct {
@@ -227,6 +230,23 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 
 	findings = dedupeFindings(findings)
 	findings = redactFindings(findings)
+
+	// Apply suppressions (centralized file + inline annotations).
+	var suppressedFindings []model.Finding
+	suppressionRules, suppressionInline := loadSuppressions(opts.SuppressionsPath, stage.WorkspacePath, sink, runID)
+	if len(suppressionRules) > 0 || len(suppressionInline) > 0 {
+		findings, suppressedFindings = suppress.Apply(findings, suppressionRules, suppressionInline)
+		if len(suppressedFindings) > 0 {
+			msg := fmt.Sprintf("%d finding(s) suppressed", len(suppressedFindings))
+			sink.Emit(progress.Event{
+				Type:    progress.EventRunWarning,
+				RunID:   runID,
+				Status:  "info",
+				Message: msg,
+			})
+		}
+	}
+
 	runWarnings = redact.Strings(runWarnings)
 	countsBySeverity := buildSeverityCounts(findings)
 	countsByCategory := buildCategoryCounts(findings)
@@ -268,11 +288,13 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 			IncludedBytes: stage.Manifest.IncludedBytes,
 			SkippedFiles:  stage.Manifest.SkippedFiles,
 		},
-		Findings:         findings,
-		CountsBySeverity: countsBySeverity,
-		CountsByCategory: countsByCategory,
-		WorkerSummaries:  workerResults,
-		Errors:           runWarnings,
+		Findings:           findings,
+		SuppressedFindings: suppressedFindings,
+		SuppressedCount:    len(suppressedFindings),
+		CountsBySeverity:   countsBySeverity,
+		CountsByCategory:   countsByCategory,
+		WorkerSummaries:    workerResults,
+		Errors:             runWarnings,
 	}
 
 	jsonPath := filepath.Join(runDir, "audit.json")
@@ -480,6 +502,34 @@ func buildSeverityCounts(findings []model.Finding) map[string]int {
 		m[sev]++
 	}
 	return m
+}
+
+func loadSuppressions(suppressionsPath, workspacePath string, sink progress.Sink, runID string) ([]suppress.Rule, map[string][]suppress.InlineSuppression) {
+	var rules []suppress.Rule
+	if strings.TrimSpace(suppressionsPath) != "" {
+		loaded, loadErr := suppress.Load(suppressionsPath)
+		if loadErr != nil {
+			sink.Emit(progress.Event{
+				Type:    progress.EventRunWarning,
+				RunID:   runID,
+				Status:  "warning",
+				Message: fmt.Sprintf("load suppressions: %v", loadErr),
+			})
+		} else {
+			rules = loaded
+		}
+	}
+
+	inline, inlineErr := suppress.ScanInline(workspacePath)
+	if inlineErr != nil {
+		sink.Emit(progress.Event{
+			Type:    progress.EventRunWarning,
+			RunID:   runID,
+			Status:  "warning",
+			Message: fmt.Sprintf("scan inline suppressions: %v", inlineErr),
+		})
+	}
+	return rules, inline
 }
 
 func buildCategoryCounts(findings []model.Finding) map[string]int {
