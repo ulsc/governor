@@ -152,3 +152,91 @@ func TestBuildSelection_MissingOnlyIDsWarnsSortedAndErrorsWhenNoneSelected(t *te
 		}
 	}
 }
+
+func TestBuildSelection_IncludeDraftIncludesDraftChecks(t *testing.T) {
+	custom := []Definition{
+		{
+			APIVersion:   APIVersion,
+			ID:           "draft-check",
+			Status:       StatusDraft,
+			Source:       SourceCustom,
+			Instructions: "draft instructions",
+		},
+		{
+			APIVersion:   APIVersion,
+			ID:           "enabled-check",
+			Status:       StatusEnabled,
+			Source:       SourceCustom,
+			Instructions: "enabled instructions",
+		},
+	}
+
+	res, err := BuildSelection(nil, custom, SelectionOptions{
+		IncludeCustom: true,
+		IncludeDraft:  true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Checks) != 2 {
+		t.Fatalf("expected 2 selected checks, got %d", len(res.Checks))
+	}
+
+	ids := map[string]struct{}{}
+	for _, selected := range res.Checks {
+		ids[selected.ID] = struct{}{}
+	}
+	if _, ok := ids["draft-check"]; !ok {
+		t.Fatal("expected draft-check to be selected when include-draft is enabled")
+	}
+	if _, ok := ids["enabled-check"]; !ok {
+		t.Fatal("expected enabled-check to be selected")
+	}
+}
+
+func TestBuildSelection_ErrorsWhenBuiltinsAndCustomDisabled(t *testing.T) {
+	_, err := BuildSelection(nil, nil, SelectionOptions{
+		IncludeBuiltins: false,
+		IncludeCustom:   false,
+	})
+	if err == nil {
+		t.Fatal("expected selection configuration error when both sources are disabled")
+	}
+	if !strings.Contains(err.Error(), "selection disabled both built-in and custom checks") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildSelection_NormalizesOnlyAndSkipIDs(t *testing.T) {
+	custom := []Definition{
+		{
+			APIVersion:   APIVersion,
+			ID:           "foo",
+			Status:       StatusEnabled,
+			Source:       SourceCustom,
+			Instructions: "foo instructions",
+		},
+	}
+
+	res, err := BuildSelection(Builtins(), custom, SelectionOptions{
+		IncludeBuiltins: true,
+		IncludeCustom:   true,
+		OnlyIDs:         []string{" APPSEC ", " FoO "},
+		SkipIDs:         []string{" appsec "},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Checks) != 1 {
+		t.Fatalf("expected exactly one selected check, got %d", len(res.Checks))
+	}
+	if res.Checks[0].ID != "foo" {
+		t.Fatalf("expected foo to remain selected, got %q", res.Checks[0].ID)
+	}
+	if len(res.Warnings) != 1 {
+		t.Fatalf("expected one warning for filtered appsec only-id, got %d: %v", len(res.Warnings), res.Warnings)
+	}
+	if got, want := res.Warnings[0], `--only-check requested unknown or filtered check "appsec"`; got != want {
+		t.Fatalf("unexpected warning: got %q want %q", got, want)
+	}
+}
