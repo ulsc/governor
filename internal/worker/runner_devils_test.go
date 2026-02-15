@@ -402,13 +402,15 @@ func TestEmitWorkerHeartbeats_StopsOnCancel(t *testing.T) {
 		emitWorkerHeartbeats(ctx, sink, "test-track", time.Now())
 	}()
 
-	// Let it emit at least one heartbeat
-	time.Sleep(6 * time.Second)
+	deadline := time.Now().Add(9 * time.Second)
+	for sink.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(25 * time.Millisecond)
+	}
 	cancel()
 	wg.Wait()
 
 	if sink.count() == 0 {
-		t.Error("expected at least one heartbeat")
+		t.Fatal("expected at least one heartbeat before timeout")
 	}
 }
 
@@ -539,10 +541,10 @@ func TestSleepWithContext_CancelledContext(t *testing.T) {
 
 func TestJoinErr(t *testing.T) {
 	tests := []struct {
-		name   string
-		base   error
-		next   error
-		isNil  bool
+		name  string
+		base  error
+		next  error
+		isNil bool
 	}{
 		{"both nil", nil, nil, true},
 		{"base nil", nil, os.ErrNotExist, false},

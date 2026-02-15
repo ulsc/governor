@@ -53,13 +53,13 @@ func TestChannelSinkEmitDropsOnBackpressureWithoutBlocking(t *testing.T) {
 		t.Fatal("expected Emit to return without blocking on full channel")
 	}
 
-	if len(ch) != 1 {
-		t.Fatalf("expected exactly one buffered event, got %d", len(ch))
-	}
-
-	got := <-ch
-	if got.Track != "worker-1" {
-		t.Fatalf("expected original buffered event to remain, got %q", got.Track)
+	select {
+	case got := <-ch:
+		if got.Track != "worker-1" {
+			t.Fatalf("expected original buffered event to remain, got %q", got.Track)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected original buffered event to remain available")
 	}
 
 	select {

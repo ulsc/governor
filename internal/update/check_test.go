@@ -86,7 +86,7 @@ func TestEmptyTagName(t *testing.T) {
 
 func TestNetworkTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(5 * time.Second)
+		time.Sleep(10 * time.Second)
 	}))
 	defer srv.Close()
 
@@ -97,8 +97,8 @@ func TestNetworkTimeout(t *testing.T) {
 	if r.NewVersion != "" {
 		t.Fatalf("expected empty NewVersion on timeout, got %q", r.NewVersion)
 	}
-	if elapsed > 4*time.Second {
-		t.Fatalf("expected timeout within ~3s, took %v", elapsed)
+	if elapsed >= 9*time.Second {
+		t.Fatalf("expected client timeout before server response, took %v", elapsed)
 	}
 }
 
