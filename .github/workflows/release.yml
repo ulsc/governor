@@ -132,6 +132,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
@@ -155,6 +157,146 @@ jobs:
       - name: Copy install script
         run: cp install.sh release/install.sh
 
+      - name: Generate release notes
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Find the previous tag (excluding the current one)
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${TAG_NAME}$" | head -n 1 || true)
+
+          if [ -z "$PREV_TAG" ]; then
+            # No previous tag — list all commits ungrouped
+            echo "## What's Changed" > release-notes.md
+            echo "" >> release-notes.md
+            git log --oneline "${TAG_NAME}" >> release-notes.md
+          else
+            COMMITS=$(git log "${PREV_TAG}..${TAG_NAME}" --oneline)
+
+            declare -a feat=() fix=() refactor=() docs=() test=() chore=() other=()
+
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              hash="${line%% *}"
+              short_hash="${hash:0:7}"
+              rest="${line#* }"
+
+              case "$rest" in
+                feat\(*\):*)
+                  scope="${rest#feat(}"
+                  scope="${scope%%)*}"
+                  msg="${rest#*): }"
+                  feat+=("- **${scope}**: ${msg} (${short_hash})")
+                  ;;
+                feat:*)
+                  msg="${rest#feat: }"
+                  feat+=("- ${msg} (${short_hash})")
+                  ;;
+                fix\(*\):*)
+                  scope="${rest#fix(}"
+                  scope="${scope%%)*}"
+                  msg="${rest#*): }"
+                  fix+=("- **${scope}**: ${msg} (${short_hash})")
+                  ;;
+                fix:*)
+                  msg="${rest#fix: }"
+                  fix+=("- ${msg} (${short_hash})")
+                  ;;
+                refactor\(*\):*)
+                  scope="${rest#refactor(}"
+                  scope="${scope%%)*}"
+                  msg="${rest#*): }"
+                  refactor+=("- **${scope}**: ${msg} (${short_hash})")
+                  ;;
+                refactor:*)
+                  msg="${rest#refactor: }"
+                  refactor+=("- ${msg} (${short_hash})")
+                  ;;
+                docs\(*\):*)
+                  scope="${rest#docs(}"
+                  scope="${scope%%)*}"
+                  msg="${rest#*): }"
+                  docs+=("- **${scope}**: ${msg} (${short_hash})")
+                  ;;
+                docs:*)
+                  msg="${rest#docs: }"
+                  docs+=("- ${msg} (${short_hash})")
+                  ;;
+                test\(*\):*)
+                  scope="${rest#test(}"
+                  scope="${scope%%)*}"
+                  msg="${rest#*): }"
+                  test+=("- **${scope}**: ${msg} (${short_hash})")
+                  ;;
+                test:*)
+                  msg="${rest#test: }"
+                  test+=("- ${msg} (${short_hash})")
+                  ;;
+                chore\(*\):*)
+                  scope="${rest#chore(}"
+                  scope="${scope%%)*}"
+                  msg="${rest#*): }"
+                  chore+=("- **${scope}**: ${msg} (${short_hash})")
+                  ;;
+                chore:*)
+                  msg="${rest#chore: }"
+                  chore+=("- ${msg} (${short_hash})")
+                  ;;
+                *)
+                  other+=("- ${rest} (${short_hash})")
+                  ;;
+              esac
+            done <<< "$COMMITS"
+
+            {
+              echo "## What's Changed"
+              echo ""
+
+              if [ ${#feat[@]} -gt 0 ]; then
+                echo "### Features"
+                printf '%s\n' "${feat[@]}"
+                echo ""
+              fi
+              if [ ${#fix[@]} -gt 0 ]; then
+                echo "### Bug Fixes"
+                printf '%s\n' "${fix[@]}"
+                echo ""
+              fi
+              if [ ${#refactor[@]} -gt 0 ]; then
+                echo "### Refactoring"
+                printf '%s\n' "${refactor[@]}"
+                echo ""
+              fi
+              if [ ${#docs[@]} -gt 0 ]; then
+                echo "### Documentation"
+                printf '%s\n' "${docs[@]}"
+                echo ""
+              fi
+              if [ ${#test[@]} -gt 0 ]; then
+                echo "### Tests"
+                printf '%s\n' "${test[@]}"
+                echo ""
+              fi
+              if [ ${#chore[@]} -gt 0 ]; then
+                echo "### Chores"
+                printf '%s\n' "${chore[@]}"
+                echo ""
+              fi
+              if [ ${#other[@]} -gt 0 ]; then
+                echo "### Other"
+                printf '%s\n' "${other[@]}"
+                echo ""
+              fi
+
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${TAG_NAME}"
+            } > release-notes.md
+          fi
+
+          echo "--- Generated release notes ---"
+          cat release-notes.md
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -163,7 +305,7 @@ jobs:
           set -euo pipefail
           gh release create "${TAG_NAME}" \
             --title "Governor ${TAG_NAME}" \
-            --generate-notes \
+            --notes-file release-notes.md \
             release/*
 
   attest-artifacts:
