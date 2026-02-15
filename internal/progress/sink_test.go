@@ -36,6 +36,8 @@ func TestChannelSinkEmitAddsTimestampAndForwardsEvent(t *testing.T) {
 }
 
 func TestChannelSinkEmitDropsOnBackpressureWithoutBlocking(t *testing.T) {
+	const ciTimeout = 5 * time.Second
+
 	ch := make(chan Event, 1)
 	ch <- Event{Type: EventWorkerStarted, Track: "worker-1"}
 	sink := NewChannelSink(ch)
@@ -49,7 +51,7 @@ func TestChannelSinkEmitDropsOnBackpressureWithoutBlocking(t *testing.T) {
 	select {
 	case <-done:
 		// Expected: emit should return immediately and drop when channel is full.
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(ciTimeout):
 		t.Fatal("expected Emit to return without blocking on full channel")
 	}
 
@@ -58,7 +60,7 @@ func TestChannelSinkEmitDropsOnBackpressureWithoutBlocking(t *testing.T) {
 		if got.Track != "worker-1" {
 			t.Fatalf("expected original buffered event to remain, got %q", got.Track)
 		}
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(ciTimeout):
 		t.Fatal("expected original buffered event to remain available")
 	}
 

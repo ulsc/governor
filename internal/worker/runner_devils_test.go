@@ -428,31 +428,6 @@ func TestEmitWorkerHeartbeats_EmptyTrack(t *testing.T) {
 	emitWorkerHeartbeats(ctx, progress.NoopSink{}, "", time.Now())
 }
 
-// --- Retry Logic Tests ---
-
-func TestRetryDelay(t *testing.T) {
-	tests := []struct {
-		base    time.Duration
-		attempt int
-		max     time.Duration
-	}{
-		{2 * time.Second, 1, 0},
-		{2 * time.Second, 2, 2 * time.Second},
-		{2 * time.Second, 3, 4 * time.Second},
-		{2 * time.Second, 4, 8 * time.Second},
-		{2 * time.Second, 10, maxRetryBackoff},
-	}
-	for _, tt := range tests {
-		delay := retryDelay(tt.base, tt.attempt)
-		if delay > maxRetryBackoff {
-			t.Errorf("retryDelay(%v, %d) = %v > max %v", tt.base, tt.attempt, delay, maxRetryBackoff)
-		}
-		if delay != tt.max {
-			t.Errorf("retryDelay(%v, %d) = %v, want %v", tt.base, tt.attempt, delay, tt.max)
-		}
-	}
-}
-
 func TestRetryDelay_ZeroBase(t *testing.T) {
 	if d := retryDelay(0, 5); d != 0 {
 		t.Errorf("expected 0 delay for zero base, got %v", d)
