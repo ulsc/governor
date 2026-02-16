@@ -16,6 +16,9 @@ coverage.out
 .vscode/
 .idea/
 
+# Worktrees
+.worktrees/
+
 # Governor local state
 .governor/*
 !.governor/.gitignore
