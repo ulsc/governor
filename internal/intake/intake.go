@@ -21,6 +21,7 @@ type StageOptions struct {
 	OutDir    string
 	MaxFiles  int
 	MaxBytes  int64
+	OnlyFiles []string
 }
 
 type StageResult struct {
@@ -116,8 +117,16 @@ func Stage(opts StageOptions) (StageResult, error) {
 		Files:           make([]model.ManifestFile, 0, min(1024, opts.MaxFiles)),
 	}
 
+	var onlySet map[string]struct{}
+	if len(opts.OnlyFiles) > 0 {
+		onlySet = make(map[string]struct{}, len(opts.OnlyFiles))
+		for _, f := range opts.OnlyFiles {
+			onlySet[filepath.ToSlash(strings.TrimSpace(f))] = struct{}{}
+		}
+	}
+
 	if st.IsDir() {
-		if err := stageFolderToWorkspace(inAbs, workspace, &manifest, opts.MaxFiles, opts.MaxBytes); err != nil {
+		if err := stageFolderToWorkspace(inAbs, workspace, &manifest, opts.MaxFiles, opts.MaxBytes, onlySet); err != nil {
 			return StageResult{}, err
 		}
 	} else {
@@ -134,7 +143,7 @@ func Stage(opts StageOptions) (StageResult, error) {
 	return res, nil
 }
 
-func stageFolderToWorkspace(srcRoot string, dstRoot string, manifest *model.InputManifest, maxFiles int, maxBytes int64) error {
+func stageFolderToWorkspace(srcRoot string, dstRoot string, manifest *model.InputManifest, maxFiles int, maxBytes int64, onlyFiles map[string]struct{}) error {
 	return filepath.WalkDir(srcRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -165,6 +174,12 @@ func stageFolderToWorkspace(srcRoot string, dstRoot string, manifest *model.Inpu
 				return filepath.SkipDir
 			}
 			return nil
+		}
+
+		if onlyFiles != nil {
+			if _, ok := onlyFiles[rel]; !ok {
+				return nil
+			}
 		}
 
 		info, infoErr := os.Lstat(path)

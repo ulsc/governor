@@ -5,6 +5,7 @@ type AuditSelectionOptions struct {
 	NoCustomChecks bool
 	OnlyIDs        []string
 	SkipIDs        []string
+	EngineFilter   Engine
 }
 
 type AuditSelection struct {
@@ -28,6 +29,7 @@ func ResolveAuditSelection(opts AuditSelectionOptions) (AuditSelection, error) {
 		IncludeCustom:   !opts.NoCustomChecks,
 		OnlyIDs:         opts.OnlyIDs,
 		SkipIDs:         opts.SkipIDs,
+		EngineFilter:    opts.EngineFilter,
 	})
 	if err != nil {
 		return AuditSelection{}, err

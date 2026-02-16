@@ -240,3 +240,73 @@ func TestBuildSelection_NormalizesOnlyAndSkipIDs(t *testing.T) {
 		t.Fatalf("unexpected warning: got %q want %q", got, want)
 	}
 }
+
+func TestBuildSelection_EngineFilterRuleOnly(t *testing.T) {
+	builtins := Builtins()
+	res, err := BuildSelection(builtins, nil, SelectionOptions{
+		IncludeBuiltins: true,
+		IncludeCustom:   false,
+		EngineFilter:    EngineRule,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, check := range res.Checks {
+		if check.Engine != EngineRule {
+			t.Errorf("engine filter rule should exclude check %q with engine %q", check.ID, check.Engine)
+		}
+	}
+	if len(res.Checks) == 0 {
+		t.Fatal("expected at least one rule check from builtins")
+	}
+}
+
+func TestBuildSelection_EngineFilterAIOnly(t *testing.T) {
+	builtins := Builtins()
+	res, err := BuildSelection(builtins, nil, SelectionOptions{
+		IncludeBuiltins: true,
+		IncludeCustom:   false,
+		EngineFilter:    EngineAI,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, check := range res.Checks {
+		if check.Engine != EngineAI {
+			t.Errorf("engine filter ai should exclude check %q with engine %q", check.ID, check.Engine)
+		}
+	}
+}
+
+func TestBuildSelection_EngineFilterEmptyIncludesAll(t *testing.T) {
+	builtins := Builtins()
+	allRes, err := BuildSelection(builtins, nil, SelectionOptions{
+		IncludeBuiltins: true,
+		IncludeCustom:   false,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ruleRes, err := BuildSelection(builtins, nil, SelectionOptions{
+		IncludeBuiltins: true,
+		IncludeCustom:   false,
+		EngineFilter:    EngineRule,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	aiRes, err := BuildSelection(builtins, nil, SelectionOptions{
+		IncludeBuiltins: true,
+		IncludeCustom:   false,
+		EngineFilter:    EngineAI,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ruleRes.Checks)+len(aiRes.Checks) != len(allRes.Checks) {
+		t.Errorf("rule (%d) + ai (%d) != all (%d)", len(ruleRes.Checks), len(aiRes.Checks), len(allRes.Checks))
+	}
+}
