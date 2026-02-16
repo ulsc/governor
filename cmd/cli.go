@@ -30,6 +30,7 @@ import (
 	"governor/internal/model"
 	"governor/internal/progress"
 	"governor/internal/safefile"
+	"governor/internal/scan"
 	"governor/internal/suppress"
 	"governor/internal/trust"
 	"governor/internal/tui"
@@ -56,6 +57,10 @@ func Execute(args []string) error {
 		return runChecks(args[1:])
 	case "hooks":
 		return runHooks(args[1:])
+	case "diff":
+		return runDiff(args[1:])
+	case "scan":
+		return runScan(args[1:])
 	case "init":
 		return runInit(args[1:])
 	case "clear":
@@ -119,6 +124,7 @@ func runAudit(args []string) error {
 	changedOnly := fs.Bool("changed-only", false, "Scan only files with uncommitted changes (vs HEAD)")
 	changedSince := fs.String("changed-since", "", "Scan only files changed since a git ref")
 	staged := fs.Bool("staged", false, "Scan only staged files (for pre-commit use)")
+	ignoreFile := fs.String("ignore-file", "", "Path to .governorignore file (default .governorignore if present)")
 
 	var onlyChecks listFlag
 	var skipChecks listFlag
@@ -324,6 +330,8 @@ func runAudit(args []string) error {
 		ChangedOnly:      *changedOnly,
 		ChangedSince:     *changedSince,
 		StagedOnly:       *staged,
+
+		IgnoreFile: resolveIgnoreFile(*ignoreFile),
 	}
 
 	if useTUI {
@@ -2374,6 +2382,8 @@ func printUsage() {
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
 	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable>] [flags]")
 	fmt.Println("  governor hooks <install|remove|status>")
+	fmt.Println("  governor diff <old.json> <new.json> [flags]")
+	fmt.Println("  governor scan <file...> [flags]")
 	fmt.Println("  governor clear [--without-last [N]]")
 	fmt.Println("")
 	fmt.Println("Flags (hooks install):")
@@ -2415,6 +2425,7 @@ func printUsage() {
 	fmt.Println("  --changed-only      Scan only files with uncommitted changes (vs HEAD)")
 	fmt.Println("  --changed-since <ref>  Scan only files changed since a git ref")
 	fmt.Println("  --staged            Scan only staged files (for pre-commit use)")
+	fmt.Println("  --ignore-file <path>  Path to .governorignore file (default .governorignore if present)")
 	fmt.Println("")
 	fmt.Println("Flags (ci):")
 	fmt.Println("  --fail-on <sev>     Exit non-zero threshold (default high)")
@@ -2460,6 +2471,19 @@ func printUsage() {
 	fmt.Println("  --keep-workspace-error  Retain staged workspace on warning/failed runs (default deletes)")
 	fmt.Println("  --include-test-files  Include test files in security scanning (excluded by default)")
 	fmt.Println("  --fail-on <sev>     Exit non-zero if findings meet/exceed severity (critical|high|medium|low|info)")
+	fmt.Println("")
+	fmt.Println("Flags (diff):")
+	fmt.Println("  --json              Output diff report as JSON")
+	fmt.Println("  --fail-on <sev>     Exit non-zero if new findings meet/exceed severity")
+	fmt.Println("  --out <file>        Write diff JSON to file")
+	fmt.Println("")
+	fmt.Println("Flags (scan):")
+	fmt.Println("  --json              Output findings as JSON array")
+	fmt.Println("  --only-check <id>   Only run specific check ID(s)")
+	fmt.Println("  --skip-check <id>   Skip specific check ID(s)")
+	fmt.Println("  --no-custom-checks  Run built-in rule checks only")
+	fmt.Println("  --fail-on <sev>     Exit non-zero if findings meet/exceed severity")
+	fmt.Println("  --ignore-file <path>  Path to .governorignore file")
 }
 
 func flagsExplicitlySet(fs *flag.FlagSet) map[string]struct{} {
@@ -2631,6 +2655,220 @@ func runHooksStatus(_ []string) error {
 	} else {
 		fmt.Println("status: not installed (hook exists but not managed by governor)")
 		fmt.Printf("path:   %s\n", hookPath)
+	}
+	return nil
+}
+
+func resolveIgnoreFile(explicit string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit
+	}
+	defaultPath := ".governorignore"
+	if _, err := os.Stat(defaultPath); err == nil {
+		return defaultPath
+	}
+	return ""
+}
+
+func runDiff(args []string) error {
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	jsonOut := fs.Bool("json", false, "Output diff report as JSON")
+	failOn := fs.String("fail-on", "", "Exit non-zero if new findings meet or exceed severity: critical|high|medium|low|info")
+	outFile := fs.String("out", "", "Write diff JSON to file")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	remaining := fs.Args()
+	if len(remaining) < 2 {
+		return usageError("usage: governor diff <old.json> <new.json> [flags]")
+	}
+	if len(remaining) > 2 {
+		return usageError("usage: governor diff <old.json> <new.json> [flags]")
+	}
+
+	oldReport, err := loadAuditJSON(remaining[0])
+	if err != nil {
+		return fmt.Errorf("load old report: %w", err)
+	}
+	newReport, err := loadAuditJSON(remaining[1])
+	if err != nil {
+		return fmt.Errorf("load new report: %w", err)
+	}
+
+	dr := diff.Compare(oldReport, newReport)
+
+	if strings.TrimSpace(*outFile) != "" {
+		b, marshalErr := json.MarshalIndent(dr, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("marshal diff report: %w", marshalErr)
+		}
+		if writeErr := safefile.WriteFileAtomic(*outFile, b, 0o600); writeErr != nil {
+			return fmt.Errorf("write diff file: %w", writeErr)
+		}
+		fmt.Printf("diff report written to %s\n", *outFile)
+	}
+
+	if *jsonOut {
+		b, marshalErr := json.MarshalIndent(dr, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("marshal diff report: %w", marshalErr)
+		}
+		fmt.Println(string(b))
+	} else {
+		printDiffSummary(dr)
+	}
+
+	return checkDiffFailOn(*failOn, dr)
+}
+
+func runScan(args []string) error {
+	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	jsonOut := fs.Bool("json", false, "Output findings as JSON array")
+	failOn := fs.String("fail-on", "", "Exit non-zero if findings meet or exceed severity: critical|high|medium|low|info")
+	checksDir := fs.String("checks-dir", "", "Checks directory")
+	noCustomChecks := fs.Bool("no-custom-checks", false, "Run built-in rule checks only")
+
+	var onlyChecks listFlag
+	var skipChecks listFlag
+	fs.Var(&onlyChecks, "only-check", "Only run specific check ID(s) (repeatable or comma-separated)")
+	fs.Var(&skipChecks, "skip-check", "Skip specific check ID(s) (repeatable or comma-separated)")
+
+	// Collect file args before flags.
+	var files []string
+	parseArgs := args
+	for len(parseArgs) > 0 && !strings.HasPrefix(parseArgs[0], "-") {
+		files = append(files, parseArgs[0])
+		parseArgs = parseArgs[1:]
+	}
+
+	if err := fs.Parse(parseArgs); err != nil {
+		return err
+	}
+	files = append(files, fs.Args()...)
+
+	if len(files) == 0 {
+		return usageError("usage: governor scan <file...> [flags]")
+	}
+
+	result, err := scan.Run(context.Background(), scan.Options{
+		Files:          files,
+		ChecksDir:      *checksDir,
+		NoCustomChecks: *noCustomChecks,
+		OnlyIDs:        onlyChecks.Values(),
+		SkipIDs:        skipChecks.Values(),
+	})
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		out, marshalErr := scan.FormatJSON(result.Findings)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		fmt.Println(out)
+	} else {
+		fmt.Print(scan.FormatHuman(result.Findings))
+	}
+
+	if strings.TrimSpace(*failOn) != "" {
+		return checkFailOn(*failOn, model.AuditReport{Findings: result.Findings})
+	}
+
+	if len(result.Findings) > 0 {
+		return fmt.Errorf("%d finding(s) detected", len(result.Findings))
+	}
+	return nil
+}
+
+func loadAuditJSON(path string) (model.AuditReport, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return model.AuditReport{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	var report model.AuditReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return model.AuditReport{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return report, nil
+}
+
+func printDiffSummary(dr diff.DiffReport) {
+	fmt.Println("diff summary:")
+	fmt.Printf("  new findings:       %d\n", dr.Summary.NewCount)
+	fmt.Printf("  resolved findings:  %d\n", dr.Summary.FixedCount)
+	fmt.Printf("  unchanged:          %d\n", dr.Summary.UnchangedCount)
+
+	if len(dr.New) > 0 {
+		fmt.Println("")
+		fmt.Println("new findings:")
+		for _, f := range dr.New {
+			cats := strings.TrimSpace(f.Category)
+			track := strings.TrimSpace(f.SourceTrack)
+			label := ""
+			if cats != "" || track != "" {
+				parts := []string{}
+				if cats != "" {
+					parts = append(parts, cats)
+				}
+				if track != "" {
+					parts = append(parts, track)
+				}
+				label = " (" + strings.Join(parts, ", ") + ")"
+			}
+			fmt.Printf("  [%-8s] %s%s\n", strings.ToUpper(f.Severity), f.Title, label)
+		}
+	}
+
+	if len(dr.Fixed) > 0 {
+		fmt.Println("")
+		fmt.Println("resolved findings:")
+		for _, f := range dr.Fixed {
+			cats := strings.TrimSpace(f.Category)
+			track := strings.TrimSpace(f.SourceTrack)
+			label := ""
+			if cats != "" || track != "" {
+				parts := []string{}
+				if cats != "" {
+					parts = append(parts, cats)
+				}
+				if track != "" {
+					parts = append(parts, track)
+				}
+				label = " (" + strings.Join(parts, ", ") + ")"
+			}
+			fmt.Printf("  [%-8s] %s%s\n", strings.ToUpper(f.Severity), f.Title, label)
+		}
+	}
+}
+
+func checkDiffFailOn(threshold string, dr diff.DiffReport) error {
+	threshold = strings.ToLower(strings.TrimSpace(threshold))
+	if threshold == "" {
+		return nil
+	}
+	thresholdWeight, ok := severityWeightMap[threshold]
+	if !ok {
+		return fmt.Errorf("invalid --fail-on severity %q (expected critical, high, medium, low, or info)", threshold)
+	}
+	count := 0
+	for _, f := range dr.New {
+		w, exists := severityWeightMap[strings.ToLower(strings.TrimSpace(f.Severity))]
+		if !exists {
+			w = severityWeightMap["info"]
+		}
+		if w <= thresholdWeight {
+			count++
+		}
+	}
+	if count > 0 {
+		return fmt.Errorf("new findings exceed --fail-on threshold %q (%d new finding(s) at or above %s severity)",
+			threshold, count, threshold)
 	}
 	return nil
 }

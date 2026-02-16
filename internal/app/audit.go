@@ -61,6 +61,8 @@ type AuditOptions struct {
 	ChangedOnly  bool
 	ChangedSince string
 	StagedOnly   bool
+
+	IgnoreFile string
 }
 
 type ArtifactPaths struct {
@@ -141,10 +143,11 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 	}
 
 	stageOpts := intake.StageOptions{
-		InputPath: opts.InputPath,
-		OutDir:    runDir,
-		MaxFiles:  opts.MaxFiles,
-		MaxBytes:  opts.MaxBytes,
+		InputPath:  opts.InputPath,
+		OutDir:     runDir,
+		MaxFiles:   opts.MaxFiles,
+		MaxBytes:   opts.MaxBytes,
+		IgnoreFile: opts.IgnoreFile,
 	}
 
 	scanMode := "full"

@@ -17,11 +17,12 @@ import (
 )
 
 type StageOptions struct {
-	InputPath string
-	OutDir    string
-	MaxFiles  int
-	MaxBytes  int64
-	OnlyFiles []string
+	InputPath  string
+	OutDir     string
+	MaxFiles   int
+	MaxBytes   int64
+	OnlyFiles  []string
+	IgnoreFile string
 }
 
 type StageResult struct {
@@ -125,12 +126,22 @@ func Stage(opts StageOptions) (StageResult, error) {
 		}
 	}
 
+	// Load .governorignore rules.
+	var ignoreRules *IgnoreRules
+	if strings.TrimSpace(opts.IgnoreFile) != "" {
+		var ignoreErr error
+		ignoreRules, ignoreErr = LoadIgnoreFile(opts.IgnoreFile)
+		if ignoreErr != nil {
+			return StageResult{}, fmt.Errorf("load ignore file: %w", ignoreErr)
+		}
+	}
+
 	if st.IsDir() {
-		if err := stageFolderToWorkspace(inAbs, workspace, &manifest, opts.MaxFiles, opts.MaxBytes, onlySet); err != nil {
+		if err := stageFolderToWorkspace(inAbs, workspace, &manifest, opts.MaxFiles, opts.MaxBytes, onlySet, ignoreRules); err != nil {
 			return StageResult{}, err
 		}
 	} else {
-		if err := stageZipToWorkspace(inAbs, workspace, &manifest, opts.MaxFiles, opts.MaxBytes); err != nil {
+		if err := stageZipToWorkspace(inAbs, workspace, &manifest, opts.MaxFiles, opts.MaxBytes, ignoreRules); err != nil {
 			return StageResult{}, err
 		}
 	}
@@ -143,7 +154,7 @@ func Stage(opts StageOptions) (StageResult, error) {
 	return res, nil
 }
 
-func stageFolderToWorkspace(srcRoot string, dstRoot string, manifest *model.InputManifest, maxFiles int, maxBytes int64, onlyFiles map[string]struct{}) error {
+func stageFolderToWorkspace(srcRoot string, dstRoot string, manifest *model.InputManifest, maxFiles int, maxBytes int64, onlyFiles map[string]struct{}, ignoreRules *IgnoreRules) error {
 	return filepath.WalkDir(srcRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -173,6 +184,10 @@ func stageFolderToWorkspace(srcRoot string, dstRoot string, manifest *model.Inpu
 				manifest.SkippedByReason["skip_dir"]++
 				return filepath.SkipDir
 			}
+			if ignoreRules.ShouldIgnore(rel, true) {
+				manifest.SkippedByReason["governorignore"]++
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
@@ -180,6 +195,12 @@ func stageFolderToWorkspace(srcRoot string, dstRoot string, manifest *model.Inpu
 			if _, ok := onlyFiles[rel]; !ok {
 				return nil
 			}
+		}
+
+		if ignoreRules.ShouldIgnore(rel, false) {
+			manifest.SkippedByReason["governorignore"]++
+			manifest.SkippedFiles++
+			return nil
 		}
 
 		info, infoErr := os.Lstat(path)

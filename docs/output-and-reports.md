@@ -162,12 +162,20 @@ Open in any markdown viewer or render to PDF.
 
 ## audit.html
 
-Standalone HTML report with no external dependencies. Includes:
+Interactive standalone HTML report with no external dependencies. Includes:
 
 - Styled hero header with run ID and duration
 - Executive summary with severity stat cards
 - Worker results table with status badges
-- Expandable findings with severity badges, metadata, file refs, evidence, impact, and remediation
+- Expandable/collapsible findings with severity badges, metadata, file refs, evidence, impact, and remediation
+- **Filtering** by severity, category, and source check (click filter buttons to toggle)
+- **Text search** to filter findings by keyword
+- **Expand All / Collapse All** button to toggle all finding cards at once
+- **Dark mode** toggle (also respects `prefers-color-scheme: dark` automatically)
+- **Reset Filters** button to clear all active filters and search
+- Responsive layout for mobile viewing
+
+Finding cards are collapsed by default. Click a finding header to expand it, or use the "Expand All" button.
 
 Can be opened directly in a browser or served as a static file. Suitable for sharing with non-technical stakeholders.
 
@@ -219,6 +227,16 @@ Generated only when `--baseline <path>` is used. Compares the current audit agai
 
 Findings are matched by a composite key of title + category + file refs + evidence (first 200 chars). This means findings are considered the same even if severity or confidence changed slightly.
 
+### Standalone diff
+
+You can also compare any two `audit.json` files without running a new audit using `governor diff`:
+
+```bash
+governor diff baseline/audit.json latest/audit.json
+```
+
+This produces the same diff output and supports `--json`, `--fail-on`, and `--out` flags. See the [Diff Command](../README.md#diff-command) section for details.
+
 ## manifest.json
 
 The input manifest listing all files included in and excluded from the workspace.
@@ -234,7 +252,8 @@ The input manifest listing all files included in and excluded from the workspace
   "skipped_by_reason": {
     "binary": 5,
     "symlink": 2,
-    "excluded_dir": 31
+    "excluded_dir": 31,
+    "governorignore": 4
   },
   "files": [
     { "path": "main.go", "size": 1234 },

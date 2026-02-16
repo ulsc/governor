@@ -20,7 +20,7 @@ const (
 	zipExtractionTimeout       = 5 * time.Minute
 )
 
-func stageZipToWorkspace(zipPath string, destDir string, manifest *model.InputManifest, maxFiles int, maxBytes int64) error {
+func stageZipToWorkspace(zipPath string, destDir string, manifest *model.InputManifest, maxFiles int, maxBytes int64, ignoreRules *IgnoreRules) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return fmt.Errorf("open zip: %w", err)
@@ -91,7 +91,7 @@ func stageZipToWorkspace(zipPath string, destDir string, manifest *model.InputMa
 			return fmt.Errorf("zip extraction timed out after %s", zipExtractionTimeout)
 		default:
 		}
-		if err := extractZipFile(destAbs, f, manifest, maxFiles, maxBytes); err != nil {
+		if err := extractZipFile(destAbs, f, manifest, maxFiles, maxBytes, ignoreRules); err != nil {
 			return err
 		}
 	}
@@ -102,7 +102,7 @@ func stageZipToWorkspace(zipPath string, destDir string, manifest *model.InputMa
 	return nil
 }
 
-func extractZipFile(destAbs string, f *zip.File, manifest *model.InputManifest, maxFiles int, maxBytes int64) error {
+func extractZipFile(destAbs string, f *zip.File, manifest *model.InputManifest, maxFiles int, maxBytes int64, ignoreRules *IgnoreRules) error {
 	cleanName, err := cleanZipEntryName(f.Name)
 	if err != nil {
 		return err
@@ -123,6 +123,10 @@ func extractZipFile(destAbs string, f *zip.File, manifest *model.InputManifest, 
 			manifest.SkippedByReason["skip_dir"]++
 			return nil
 		}
+		if ignoreRules.ShouldIgnore(cleanName, true) {
+			manifest.SkippedByReason["governorignore"]++
+			return nil
+		}
 		targetPath, err := workspaceTargetPath(destAbs, cleanName)
 		if err != nil {
 			return err
@@ -132,6 +136,12 @@ func extractZipFile(destAbs string, f *zip.File, manifest *model.InputManifest, 
 
 	if reason, skip := skipFile(filepath.Base(cleanName), cleanName, f.FileInfo().Size(), mode); skip {
 		manifest.SkippedByReason[reason]++
+		manifest.SkippedFiles++
+		return nil
+	}
+
+	if ignoreRules.ShouldIgnore(cleanName, false) {
+		manifest.SkippedByReason["governorignore"]++
 		manifest.SkippedFiles++
 		return nil
 	}

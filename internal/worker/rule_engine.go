@@ -379,3 +379,51 @@ func globToRegex(glob string) string {
 	b.WriteString("$")
 	return b.String()
 }
+
+// ScanFiles runs rule-based detectors against the given files directly,
+// without a workspace or manifest. Used by the `governor scan` command.
+func ScanFiles(ctx context.Context, files []string, checkDef checks.Definition) ([]model.Finding, error) {
+	checkDef = checks.NormalizeDefinition(checkDef)
+	compiled, err := compileDetectors(checkDef.Rule.Detectors)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	var findings []model.Finding
+
+	for _, filePath := range files {
+		select {
+		case <-ctx.Done():
+			return findings, ctx.Err()
+		default:
+		}
+
+		rel := filepath.ToSlash(filePath)
+		if !scopeAllows(rel, checkDef.Scope) {
+			continue
+		}
+
+		contentBytes, readErr := os.ReadFile(filePath)
+		if readErr != nil {
+			continue
+		}
+		if len(contentBytes) > maxRuleFileBytes {
+			continue
+		}
+
+		content := string(contentBytes)
+		for _, detector := range compiled {
+			maxMatches := detector.detector.MaxMatches
+			if maxMatches <= 0 {
+				maxMatches = defaultDetectorMaxMatches
+			}
+			matchRanges := detectorMatches(detector, content, maxMatches)
+			for idx, pair := range matchRanges {
+				finding := buildRuleFinding(checkDef, detector.detector, filePath, content, pair[0], pair[1], idx+1, now)
+				findings = append(findings, finding)
+			}
+		}
+	}
+	return findings, nil
+}

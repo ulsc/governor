@@ -203,6 +203,7 @@ func RenderHTML(report model.AuditReport) string {
 	b.WriteString("      align-items: center;\n")
 	b.WriteString("      gap: 8px;\n")
 	b.WriteString("      margin-bottom: 8px;\n")
+	b.WriteString("      cursor: pointer;\n")
 	b.WriteString("    }\n")
 	b.WriteString("    .badge {\n")
 	b.WriteString("      display: inline-block;\n")
@@ -298,8 +299,12 @@ func RenderHTML(report model.AuditReport) string {
 	b.WriteString("    }\n")
 	b.WriteString("    .finding.hidden { display: none; }\n")
 	b.WriteString("    .finding-details {\n")
+	b.WriteString("      display: none;\n")
 	b.WriteString("      overflow: hidden;\n")
 	b.WriteString("      transition: max-height 0.2s ease;\n")
+	b.WriteString("    }\n")
+	b.WriteString("    .finding.expanded .finding-details {\n")
+	b.WriteString("      display: block;\n")
 	b.WriteString("    }\n")
 	b.WriteString("    .finding-toggle {\n")
 	b.WriteString("      background: none;\n")
@@ -323,7 +328,63 @@ func RenderHTML(report model.AuditReport) string {
 	b.WriteString("      .hero h1 { font-size: 24px; }\n")
 	b.WriteString("      section { padding: 14px; }\n")
 	b.WriteString("      th:nth-child(5), td:nth-child(5) { display: none; }\n")
+	b.WriteString("      .filter-bar { flex-direction: column; align-items: stretch; }\n")
 	b.WriteString("    }\n")
+	b.WriteString("    @media (prefers-color-scheme: dark) {\n")
+	b.WriteString("      :root:not(.light) {\n")
+	b.WriteString("        color-scheme: dark;\n")
+	b.WriteString("        --bg: #0f1419;\n")
+	b.WriteString("        --surface: #1a2332;\n")
+	b.WriteString("        --border: #2d3f54;\n")
+	b.WriteString("        --text: #e1e8f0;\n")
+	b.WriteString("        --muted: #8899aa;\n")
+	b.WriteString("      }\n")
+	b.WriteString("      :root:not(.light) body { background: var(--bg); }\n")
+	b.WriteString("      :root:not(.light) .finding { background: var(--surface); }\n")
+	b.WriteString("      :root:not(.light) .stat-card { background: var(--surface); }\n")
+	b.WriteString("      :root:not(.light) .stat-card .value { color: var(--text); }\n")
+	b.WriteString("      :root:not(.light) h2 { color: var(--text); }\n")
+	b.WriteString("      :root:not(.light) h4 { color: var(--text); }\n")
+	b.WriteString("      :root:not(.light) .text-block { background: #111922; border-color: var(--border); }\n")
+	b.WriteString("      :root:not(.light) .text-block p { color: var(--text); }\n")
+	b.WriteString("      :root:not(.light) code { background: #1e293b; color: #93c5fd; }\n")
+	b.WriteString("      :root:not(.light) .filter-btn { background: var(--surface); color: var(--text); border-color: var(--border); }\n")
+	b.WriteString("      :root:not(.light) .filter-btn:hover { background: #243447; }\n")
+	b.WriteString("      :root:not(.light) .filter-bar input[type=\"text\"] { background: var(--surface); color: var(--text); border-color: var(--border); }\n")
+	b.WriteString("    }\n")
+	b.WriteString("    html.dark {\n")
+	b.WriteString("      color-scheme: dark;\n")
+	b.WriteString("      --bg: #0f1419;\n")
+	b.WriteString("      --surface: #1a2332;\n")
+	b.WriteString("      --border: #2d3f54;\n")
+	b.WriteString("      --text: #e1e8f0;\n")
+	b.WriteString("      --muted: #8899aa;\n")
+	b.WriteString("    }\n")
+	b.WriteString("    html.dark body { background: var(--bg); }\n")
+	b.WriteString("    html.dark .finding { background: var(--surface); }\n")
+	b.WriteString("    html.dark .stat-card { background: var(--surface); }\n")
+	b.WriteString("    html.dark .stat-card .value { color: var(--text); }\n")
+	b.WriteString("    html.dark h2 { color: var(--text); }\n")
+	b.WriteString("    html.dark h4 { color: var(--text); }\n")
+	b.WriteString("    html.dark .text-block { background: #111922; border-color: var(--border); }\n")
+	b.WriteString("    html.dark .text-block p { color: var(--text); }\n")
+	b.WriteString("    html.dark code { background: #1e293b; color: #93c5fd; }\n")
+	b.WriteString("    html.dark .filter-btn { background: var(--surface); color: var(--text); border-color: var(--border); }\n")
+	b.WriteString("    html.dark .filter-btn:hover { background: #243447; }\n")
+	b.WriteString("    html.dark .filter-bar input[type=\"text\"] { background: var(--surface); color: var(--text); border-color: var(--border); }\n")
+	b.WriteString("    .toolbar-btn {\n")
+	b.WriteString("      padding: 5px 14px;\n")
+	b.WriteString("      border: 1px solid var(--border);\n")
+	b.WriteString("      border-radius: 8px;\n")
+	b.WriteString("      background: var(--surface);\n")
+	b.WriteString("      font-size: 12px;\n")
+	b.WriteString("      font-weight: 600;\n")
+	b.WriteString("      cursor: pointer;\n")
+	b.WriteString("      color: var(--muted);\n")
+	b.WriteString("      transition: background 0.15s;\n")
+	b.WriteString("    }\n")
+	b.WriteString("    .toolbar-btn:hover { background: #eef2ff; color: var(--text); }\n")
+	b.WriteString("    html.dark .toolbar-btn:hover { background: #243447; }\n")
 	b.WriteString("  </style>\n")
 	b.WriteString("</head>\n")
 	b.WriteString("<body>\n")
@@ -467,7 +528,7 @@ func RenderHTML(report model.AuditReport) string {
 		return sorted[i].Title < sorted[j].Title
 	})
 
-	// Collect unique categories and severities for filter buttons.
+	// Collect unique categories, severities, and source tracks for filter buttons.
 	categories := collectUnique(sorted, func(f model.Finding) string { return strings.ToLower(strings.TrimSpace(f.Category)) })
 	severities := collectUnique(sorted, func(f model.Finding) string {
 		s := strings.ToLower(strings.TrimSpace(f.Severity))
@@ -476,11 +537,17 @@ func RenderHTML(report model.AuditReport) string {
 		}
 		return s
 	})
+	tracks := collectUnique(sorted, func(f model.Finding) string { return strings.ToLower(strings.TrimSpace(f.SourceTrack)) })
 
-	// Filter toolbar
+	// Toolbar: search + action buttons
 	b.WriteString("      <div class=\"filter-bar\">\n")
 	b.WriteString("        <input type=\"text\" id=\"finding-search\" placeholder=\"Search findings...\">\n")
+	b.WriteString("        <button class=\"toolbar-btn\" id=\"toggle-all\">Expand All</button>\n")
+	b.WriteString("        <button class=\"toolbar-btn\" id=\"dark-toggle\">Dark Mode</button>\n")
+	b.WriteString("        <button class=\"toolbar-btn\" id=\"reset-filters\">Reset Filters</button>\n")
 	b.WriteString("      </div>\n")
+
+	// Filter buttons: severity + category + check
 	b.WriteString("      <div class=\"filter-bar\">\n")
 	b.WriteString("        <span style=\"font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em\">Severity:</span>\n")
 	for _, sev := range severities {
@@ -490,6 +557,12 @@ func RenderHTML(report model.AuditReport) string {
 		b.WriteString("        <span style=\"font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-left:8px\">Category:</span>\n")
 		for _, cat := range categories {
 			b.WriteString(fmt.Sprintf("        <button class=\"filter-btn\" data-filter-category=\"%s\">%s</button>\n", htmlInline(cat), htmlInline(cat)))
+		}
+	}
+	if len(tracks) > 0 {
+		b.WriteString("        <span style=\"font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-left:8px\">Check:</span>\n")
+		for _, track := range tracks {
+			b.WriteString(fmt.Sprintf("        <button class=\"filter-btn\" data-filter-check=\"%s\">%s</button>\n", htmlInline(track), htmlInline(track)))
 		}
 	}
 	b.WriteString("        <span class=\"filter-count\" id=\"filter-count\"></span>\n")
@@ -502,11 +575,12 @@ func RenderHTML(report model.AuditReport) string {
 		}
 		cat := strings.ToLower(strings.TrimSpace(f.Category))
 
-		b.WriteString(fmt.Sprintf("      <article class=\"finding\" data-severity=\"%s\" data-category=\"%s\">\n", htmlInline(sev), htmlInline(cat)))
+		track := strings.ToLower(strings.TrimSpace(f.SourceTrack))
+		b.WriteString(fmt.Sprintf("      <article class=\"finding\" data-severity=\"%s\" data-category=\"%s\" data-check=\"%s\">\n", htmlInline(sev), htmlInline(cat), htmlInline(track)))
 		b.WriteString("        <div class=\"finding-header\">\n")
 		b.WriteString(fmt.Sprintf("          <span class=\"badge badge-%s\">%s</span>\n", severityClass(sev), htmlInline(sev)))
 		b.WriteString(fmt.Sprintf("          <h3>%s</h3>\n", htmlInline(f.Title)))
-		b.WriteString("          <button class=\"finding-toggle\" onclick=\"toggleDetails(this)\">collapse</button>\n")
+		b.WriteString("          <button class=\"finding-toggle\">expand</button>\n")
 		b.WriteString("        </div>\n")
 		b.WriteString("        <div class=\"finding-details\">\n")
 		b.WriteString("        <div class=\"finding-meta\">\n")
@@ -846,23 +920,34 @@ func htmlFilterScript() string {
   var findings = document.querySelectorAll('.finding');
   var sevBtns = document.querySelectorAll('[data-filter-severity]');
   var catBtns = document.querySelectorAll('[data-filter-category]');
+  var chkBtns = document.querySelectorAll('[data-filter-check]');
+  var toggleAllBtn = document.getElementById('toggle-all');
+  var darkBtn = document.getElementById('dark-toggle');
+  var resetBtn = document.getElementById('reset-filters');
   var activeSev = {};
   var activeCat = {};
+  var activeChk = {};
 
-  function toggle(map, key, btn) {
+  function toggleFilter(map, key, btn) {
     if (map[key]) { delete map[key]; btn.classList.remove('active'); }
     else { map[key] = true; btn.classList.add('active'); }
   }
 
   sevBtns.forEach(function(btn) {
     btn.addEventListener('click', function() {
-      toggle(activeSev, btn.getAttribute('data-filter-severity'), btn);
+      toggleFilter(activeSev, btn.getAttribute('data-filter-severity'), btn);
       applyFilters();
     });
   });
   catBtns.forEach(function(btn) {
     btn.addEventListener('click', function() {
-      toggle(activeCat, btn.getAttribute('data-filter-category'), btn);
+      toggleFilter(activeCat, btn.getAttribute('data-filter-category'), btn);
+      applyFilters();
+    });
+  });
+  chkBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      toggleFilter(activeChk, btn.getAttribute('data-filter-check'), btn);
       applyFilters();
     });
   });
@@ -874,14 +959,17 @@ func htmlFilterScript() string {
     var q = (search ? search.value : '').toLowerCase();
     var sevKeys = Object.keys(activeSev);
     var catKeys = Object.keys(activeCat);
+    var chkKeys = Object.keys(activeChk);
     var shown = 0;
     findings.forEach(function(el) {
       var sev = el.getAttribute('data-severity') || '';
       var cat = el.getAttribute('data-category') || '';
+      var chk = el.getAttribute('data-check') || '';
       var text = el.textContent.toLowerCase();
       var visible = true;
       if (sevKeys.length > 0 && !activeSev[sev]) visible = false;
       if (catKeys.length > 0 && !activeCat[cat]) visible = false;
+      if (chkKeys.length > 0 && !activeChk[chk]) visible = false;
       if (q && text.indexOf(q) === -1) visible = false;
       el.classList.toggle('hidden', !visible);
       if (visible) shown++;
@@ -892,17 +980,65 @@ func htmlFilterScript() string {
   }
   applyFilters();
 
-  window.toggleDetails = function(btn) {
-    var details = btn.closest('.finding').querySelector('.finding-details');
-    if (!details) return;
-    if (details.style.display === 'none') {
-      details.style.display = '';
-      btn.textContent = 'collapse';
-    } else {
-      details.style.display = 'none';
-      btn.textContent = 'expand';
-    }
-  };
+  // Header click toggles expand/collapse
+  findings.forEach(function(el) {
+    var header = el.querySelector('.finding-header');
+    if (!header) return;
+    header.addEventListener('click', function(e) {
+      if (e.target.tagName === 'A') return;
+      el.classList.toggle('expanded');
+      var btn = el.querySelector('.finding-toggle');
+      if (btn) btn.textContent = el.classList.contains('expanded') ? 'collapse' : 'expand';
+    });
+  });
+
+  // Expand All / Collapse All
+  if (toggleAllBtn) {
+    toggleAllBtn.addEventListener('click', function() {
+      var allExpanded = true;
+      findings.forEach(function(el) { if (!el.classList.contains('expanded')) allExpanded = false; });
+      findings.forEach(function(el) {
+        if (allExpanded) {
+          el.classList.remove('expanded');
+        } else {
+          el.classList.add('expanded');
+        }
+        var btn = el.querySelector('.finding-toggle');
+        if (btn) btn.textContent = allExpanded ? 'expand' : 'collapse';
+      });
+      toggleAllBtn.textContent = allExpanded ? 'Expand All' : 'Collapse All';
+    });
+  }
+
+  // Dark mode toggle
+  if (darkBtn) {
+    darkBtn.addEventListener('click', function() {
+      var html = document.documentElement;
+      if (html.classList.contains('dark')) {
+        html.classList.remove('dark');
+        html.classList.add('light');
+        darkBtn.textContent = 'Dark Mode';
+      } else {
+        html.classList.remove('light');
+        html.classList.add('dark');
+        darkBtn.textContent = 'Light Mode';
+      }
+    });
+  }
+
+  // Reset Filters
+  if (resetBtn) {
+    resetBtn.addEventListener('click', function() {
+      activeSev = {};
+      activeCat = {};
+      activeChk = {};
+      sevBtns.forEach(function(b) { b.classList.remove('active'); });
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      chkBtns.forEach(function(b) { b.classList.remove('active'); });
+      if (search) search.value = '';
+      applyFilters();
+    });
+  }
 })();
 </script>
 `

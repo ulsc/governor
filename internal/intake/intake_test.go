@@ -349,6 +349,65 @@ func TestStageFolder_OnlyFilesSubdir(t *testing.T) {
 	}
 }
 
+func TestStageFolder_GovernorIgnore(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "main.go"), "package main")
+	mustWrite(t, filepath.Join(root, "util.go"), "package main")
+	mustWrite(t, filepath.Join(root, "generated", "model.go"), "package gen")
+	mustWrite(t, filepath.Join(root, "debug.log"), "log data")
+
+	ignorePath := filepath.Join(root, ".governorignore")
+	mustWrite(t, ignorePath, "generated/\n*.log\n")
+
+	out := t.TempDir()
+	res, err := Stage(StageOptions{
+		InputPath:  root,
+		OutDir:     out,
+		MaxFiles:   100,
+		MaxBytes:   10 * 1024 * 1024,
+		IgnoreFile: ignorePath,
+	})
+	if err != nil {
+		t.Fatalf("stage failed: %v", err)
+	}
+
+	// main.go, util.go, and .governorignore itself should be included.
+	if res.Manifest.IncludedFiles != 3 {
+		t.Fatalf("expected 3 included files, got %d", res.Manifest.IncludedFiles)
+	}
+
+	for _, f := range res.Manifest.Files {
+		if strings.Contains(f.Path, "generated") || strings.Contains(f.Path, ".log") {
+			t.Errorf("ignored file %s should not be in manifest", f.Path)
+		}
+	}
+
+	if got := res.Manifest.SkippedByReason["governorignore"]; got < 2 {
+		t.Fatalf("expected governorignore >= 2, got %d", got)
+	}
+}
+
+func TestStageFolder_GovernorIgnoreMissing(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "main.go"), "package main")
+
+	out := t.TempDir()
+	res, err := Stage(StageOptions{
+		InputPath:  root,
+		OutDir:     out,
+		MaxFiles:   100,
+		MaxBytes:   10 * 1024 * 1024,
+		IgnoreFile: filepath.Join(root, ".governorignore"),
+	})
+	if err != nil {
+		t.Fatalf("stage failed: %v", err)
+	}
+
+	if res.Manifest.IncludedFiles != 1 {
+		t.Fatalf("expected 1 included file, got %d", res.Manifest.IncludedFiles)
+	}
+}
+
 func mustWrite(t *testing.T, path string, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

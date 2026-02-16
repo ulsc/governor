@@ -37,7 +37,10 @@ Disclaimer note:
 - [Audit Command](#audit-command)
 - [Isolated Runs](#isolated-runs)
 - [Checks Command](#checks-command)
+- [Scan Command](#scan-command)
+- [Diff Command](#diff-command)
 - [Hooks Command](#hooks-command)
+- [Ignore File](#ignore-file)
 - [Custom Check Format](#custom-check-format)
 - [Extractor (Docs to Checks)](#extractor-docs-to-checks)
 - [Checks Docs](#checks-docs)
@@ -286,6 +289,7 @@ governor audit <path-or-zip> [flags]
 - `--no-tui`: force plain mode
 - `--timeout <duration>`: per-check timeout (default `4m`, set `0` to disable)
 - `--out <dir>`: custom output directory
+- `--ignore-file <path>`: path to a `.governorignore` file (auto-detected in input root if omitted)
 - `--keep-workspace-error`: keep staged `workspace/` only for warning/failed runs (default deletes)
 
 Notes:
@@ -563,6 +567,126 @@ Shows whether the Governor pre-commit hook is currently installed:
 governor hooks status
 ```
 
+## Scan Command
+
+```bash
+governor scan <file> [file2 ...] [flags]
+```
+
+Lightweight single-file scanning that runs rule-engine checks against one or more files and prints findings to stdout. No workspace, no manifest, no output directory -- ideal for quick checks during development.
+
+### Flags
+
+- `--json`: output findings as a JSON array
+- `--only-check <id>`: run only specified check IDs (repeatable)
+- `--skip-check <id>`: skip specified check IDs (repeatable)
+- `--no-custom-checks`: run built-in rule checks only
+- `--checks-dir <dir>`: custom checks directory
+- `--fail-on <severity>`: exit non-zero if findings meet or exceed severity
+
+### Examples
+
+```bash
+# Scan a single file
+governor scan config.go
+
+# Scan multiple files
+governor scan main.go config.go auth/handler.go
+
+# JSON output for tooling
+governor scan --json src/*.go
+
+# Run only credential checks
+governor scan --only-check hardcoded_credentials config.go
+
+# Gate on severity (useful in scripts)
+governor scan --fail-on high config.go
+```
+
+Notes:
+- Only accepts files, not directories. Use `governor audit` for directory scanning.
+- Runs only `engine: rule` checks (deterministic, no AI, no network).
+- Default exit code: 0 = no findings, 1 = findings exist (or `--fail-on` threshold met).
+
+## Diff Command
+
+```bash
+governor diff <old.json> <new.json> [flags]
+```
+
+Compares two `audit.json` files and reports new, resolved, and unchanged findings. This is useful for tracking security posture changes between audits without running a new audit.
+
+### Flags
+
+- `--json`: output the full diff report as JSON
+- `--fail-on <severity>`: exit non-zero if new findings (regressions) meet or exceed severity
+- `--out <file>`: write the diff JSON to a file
+
+### Examples
+
+```bash
+# Compare two audit reports
+governor diff baseline/audit.json latest/audit.json
+
+# JSON output for CI integration
+governor diff --json old.json new.json
+
+# Fail CI if there are new high+ findings
+governor diff --fail-on high old.json new.json
+
+# Save diff to a file
+governor diff --out diff-report.json old.json new.json
+```
+
+Notes:
+- `--fail-on` applies only to new findings (regressions), not unchanged findings.
+- Findings are matched by title + category + file refs + evidence (first 200 chars).
+
+## Ignore File
+
+Governor supports a `.governorignore` file for excluding paths from scanning during intake, using gitignore-style patterns.
+
+### Location
+
+Place a `.governorignore` file in the root of the input being audited. Governor auto-detects it when present. You can also specify an explicit path:
+
+```bash
+governor audit ./my-app --ignore-file /path/to/.governorignore
+```
+
+### Syntax
+
+```text
+# Comments start with #
+# Blank lines are ignored
+
+# Glob patterns
+*.generated.go
+*.min.js
+
+# Directory patterns (trailing slash)
+fixtures/
+test_data/
+
+# Double-star for recursive matching
+**/migrations/**
+docs/**/*.pdf
+
+# Negation to re-include
+!important.generated.go
+```
+
+Rules:
+- Lines starting with `#` are comments.
+- Patterns without a `/` match against the file basename anywhere in the tree.
+- Patterns with a `/` match against the relative path from the input root.
+- A trailing `/` matches directories only.
+- `!` prefix negates a pattern (re-includes previously excluded paths).
+- Last matching pattern wins (standard gitignore semantics).
+- If the file is missing, scanning proceeds normally with no exclusions.
+
+Excluded files are tracked in `manifest.json` under the `"governorignore"` skip reason.
+
 ## Custom Check Format
 
 Custom checks live in:
@@ -690,7 +814,7 @@ worker-<check-id>-output.json
 workspace/                 # deleted by default; kept for warning/failed runs with --keep-workspace-error
 ```
 
-`audit.json` is intended for automation. `audit.md` and `audit.html` are intended for humans.
+`audit.json` is intended for automation. `audit.md` and `audit.html` are intended for humans. The HTML report is interactive -- it includes severity/category/check filtering, text search, collapsible finding cards, and a dark mode toggle.
 
 Git hygiene:
 - Keep `.governor/.gitignore` tracked so `runs/` artifacts stay out of git while `.governor/checks/` can be versioned.

@@ -310,6 +310,54 @@ governor audit ./my-app --fail-on info --no-tui
 
 The exit code is non-zero when findings meet or exceed the specified severity, making it easy to gate deployments.
 
+## Single-File Scanning
+
+For quick checks on individual files without a full audit, use `governor scan`:
+
+```bash
+# Scan a single file for common issues
+governor scan config.go
+
+# Scan multiple files with JSON output
+governor scan --json main.go config.go
+
+# Fail if findings meet a severity threshold
+governor scan --fail-on high config.go
+```
+
+This runs only rule-engine checks (no AI, no network) and prints findings to stdout. No workspace or output directory is created. See the [Scan Command](../README.md#scan-command) section for full flag reference.
+
+## Comparing Audits
+
+Use `governor diff` to compare two `audit.json` files and see what changed:
+
+```bash
+governor diff baseline/audit.json latest/audit.json
+```
+
+This shows new findings (regressions), resolved findings, and unchanged findings. Use `--fail-on` to gate CI on new regressions:
+
+```bash
+governor diff --fail-on high old.json new.json
+```
+
+See the [Diff Command](../README.md#diff-command) section for details.
+
+## Ignoring Files
+
+Create a `.governorignore` file in the root of your project to exclude paths from scanning:
+
+```text
+# Skip generated code
+*.generated.go
+
+# Skip test fixtures
+fixtures/
+**/test_data/**
+```
+
+Governor auto-detects `.governorignore` in the input root. Patterns follow gitignore syntax including negation (`!pattern`) and directory-only matching (`dir/`). See the [Ignore File](../README.md#ignore-file) section for full syntax.
+
 ## Next Steps
 
 - [Configuration](./configuration.md) -- set up AI profiles, layered config files, and tune audit behavior
