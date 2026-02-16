@@ -271,6 +271,84 @@ func TestStageFolder_SkipsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestStageFolder_OnlyFilesFilter(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "main.go"), "package main")
+	mustWrite(t, filepath.Join(root, "config.yaml"), "x: 1")
+	mustWrite(t, filepath.Join(root, "util.go"), "package util")
+
+	out := t.TempDir()
+	res, err := Stage(StageOptions{
+		InputPath: root,
+		OutDir:    out,
+		MaxFiles:  100,
+		MaxBytes:  1024 * 1024,
+		OnlyFiles: []string{"main.go"},
+	})
+	if err != nil {
+		t.Fatalf("stage failed: %v", err)
+	}
+
+	if res.Manifest.IncludedFiles != 1 {
+		t.Fatalf("expected 1 included file with OnlyFiles, got %d", res.Manifest.IncludedFiles)
+	}
+	found := false
+	for _, f := range res.Manifest.Files {
+		if f.Path == "main.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected main.go in manifest")
+	}
+}
+
+func TestStageFolder_OnlyFilesEmpty(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "main.go"), "package main")
+	mustWrite(t, filepath.Join(root, "util.go"), "package util")
+
+	out := t.TempDir()
+	// nil OnlyFiles should include all files (normal behavior).
+	res, err := Stage(StageOptions{
+		InputPath: root,
+		OutDir:    out,
+		MaxFiles:  100,
+		MaxBytes:  1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("stage failed: %v", err)
+	}
+	if res.Manifest.IncludedFiles != 2 {
+		t.Fatalf("expected 2 included files without OnlyFiles, got %d", res.Manifest.IncludedFiles)
+	}
+}
+
+func TestStageFolder_OnlyFilesSubdir(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "main.go"), "package main")
+	mustWrite(t, filepath.Join(root, "pkg", "util.go"), "package pkg")
+	mustWrite(t, filepath.Join(root, "pkg", "other.go"), "package pkg")
+
+	out := t.TempDir()
+	res, err := Stage(StageOptions{
+		InputPath: root,
+		OutDir:    out,
+		MaxFiles:  100,
+		MaxBytes:  1024 * 1024,
+		OnlyFiles: []string{"pkg/util.go"},
+	})
+	if err != nil {
+		t.Fatalf("stage failed: %v", err)
+	}
+	if res.Manifest.IncludedFiles != 1 {
+		t.Fatalf("expected 1 included file, got %d", res.Manifest.IncludedFiles)
+	}
+	if res.Manifest.Files[0].Path != "pkg/util.go" {
+		t.Fatalf("expected pkg/util.go, got %s", res.Manifest.Files[0].Path)
+	}
+}
+
 func mustWrite(t *testing.T, path string, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

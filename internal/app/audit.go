@@ -13,6 +13,7 @@ import (
 	"governor/internal/ai"
 	"governor/internal/checks"
 	"governor/internal/diff"
+	gitpkg "governor/internal/git"
 	"governor/internal/intake"
 	"governor/internal/model"
 	"governor/internal/progress"
@@ -54,6 +55,12 @@ type AuditOptions struct {
 	SuppressionsPath  string
 	ShowSuppressed    bool
 	IncludeTestFiles  bool
+
+	Quick bool
+
+	ChangedOnly  bool
+	ChangedSince string
+	StagedOnly   bool
 }
 
 type ArtifactPaths struct {
@@ -133,12 +140,40 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 		return
 	}
 
-	stage, stageErr := intake.Stage(intake.StageOptions{
+	stageOpts := intake.StageOptions{
 		InputPath: opts.InputPath,
 		OutDir:    runDir,
 		MaxFiles:  opts.MaxFiles,
 		MaxBytes:  opts.MaxBytes,
-	})
+	}
+
+	scanMode := "full"
+	if opts.ChangedOnly || opts.ChangedSince != "" || opts.StagedOnly {
+		repoRoot, rootErr := gitpkg.RepoRoot(opts.InputPath)
+		if rootErr != nil {
+			err = fmt.Errorf("git filtering requires a git repository: %w", rootErr)
+			return
+		}
+
+		var changedFiles []string
+		switch {
+		case opts.StagedOnly:
+			scanMode = "staged"
+			changedFiles, err = gitpkg.StagedFiles(repoRoot)
+		case opts.ChangedSince != "":
+			scanMode = fmt.Sprintf("changed-since %s", opts.ChangedSince)
+			changedFiles, err = gitpkg.ChangedFiles(repoRoot, opts.ChangedSince)
+		default:
+			scanMode = "changed-only"
+			changedFiles, err = gitpkg.ChangedFiles(repoRoot, "")
+		}
+		if err != nil {
+			return
+		}
+		stageOpts.OnlyFiles = changedFiles
+	}
+
+	stage, stageErr := intake.Stage(stageOpts)
 	if stageErr != nil {
 		err = stageErr
 		return
@@ -165,12 +200,16 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 		return
 	}
 
-	selection, selectionErr := checks.ResolveAuditSelection(checks.AuditSelectionOptions{
+	selOpts := checks.AuditSelectionOptions{
 		ChecksDir:      opts.ChecksDir,
 		NoCustomChecks: opts.NoCustomChecks,
 		OnlyIDs:        opts.OnlyChecks,
 		SkipIDs:        opts.SkipChecks,
-	})
+	}
+	if opts.Quick {
+		selOpts.EngineFilter = checks.EngineRule
+	}
+	selection, selectionErr := checks.ResolveAuditSelection(selOpts)
 	if selectionErr != nil {
 		err = selectionErr
 		return
@@ -252,6 +291,11 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 	countsByCategory := buildCategoryCounts(findings)
 	completed := time.Now().UTC()
 
+	aiRequestedBin := opts.AIRequest
+	if opts.Quick {
+		aiRequestedBin = "none (quick mode)"
+	}
+
 	report = model.AuditReport{
 		RunMetadata: model.RunMetadata{
 			RunID:          runID,
@@ -264,7 +308,7 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 			AIModel:        opts.AIRuntime.Model,
 			AIAuthMode:     opts.AIRuntime.AuthMode,
 			AIBin:          opts.AIBin,
-			AIRequestedBin: opts.AIRequest,
+			AIRequestedBin: aiRequestedBin,
 			AIVersion:      opts.AIVersion,
 			AISHA256:       opts.AISHA256,
 			ExecutionMode:  opts.ExecutionMode,
@@ -278,6 +322,7 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 			AIChecks:       aiCount,
 			RuleChecks:     ruleCount,
 			CheckIDs:       enabledCheckIDs,
+			ScanMode:       scanMode,
 		},
 		InputSummary: model.InputSummary{
 			InputType:     stage.InputType,

@@ -12,6 +12,7 @@ type SelectionOptions struct {
 	IncludeDraft    bool
 	OnlyIDs         []string
 	SkipIDs         []string
+	EngineFilter    Engine
 }
 
 type SelectionResult struct {
@@ -64,6 +65,9 @@ func BuildSelection(builtins []Definition, custom []Definition, opts SelectionOp
 			return
 		}
 		if def.Status == StatusDraft && !opts.IncludeDraft {
+			return
+		}
+		if opts.EngineFilter != "" && def.Engine != opts.EngineFilter {
 			return
 		}
 

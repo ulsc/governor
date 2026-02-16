@@ -88,6 +88,7 @@ type RunMetadata struct {
 	AIChecks       int       `json:"ai_checks,omitempty"`
 	RuleChecks     int       `json:"rule_checks,omitempty"`
 	CheckIDs       []string  `json:"check_ids,omitempty"`
+	ScanMode       string    `json:"scan_mode,omitempty"`
 }
 
 type InputSummary struct {

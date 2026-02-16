@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -53,6 +54,8 @@ func Execute(args []string) error {
 		return runIsolate(args[1:])
 	case "checks":
 		return runChecks(args[1:])
+	case "hooks":
+		return runHooks(args[1:])
 	case "init":
 		return runInit(args[1:])
 	case "clear":
@@ -112,6 +115,10 @@ func runAudit(args []string) error {
 	includeTestFiles := fs.Bool("include-test-files", false, "Include test files in security scanning (excluded by default)")
 	suppressionsPath := fs.String("suppressions", "", "Path to suppressions YAML file (default ./.governor/suppressions.yaml if present)")
 	showSuppressed := fs.Bool("show-suppressed", false, "Include suppressed findings in reports")
+	quick := fs.Bool("quick", false, "Run only rule-engine checks (no AI, no network)")
+	changedOnly := fs.Bool("changed-only", false, "Scan only files with uncommitted changes (vs HEAD)")
+	changedSince := fs.String("changed-since", "", "Scan only files changed since a git ref")
+	staged := fs.Bool("staged", false, "Scan only staged files (for pre-commit use)")
 
 	var onlyChecks listFlag
 	var skipChecks listFlag
@@ -136,6 +143,21 @@ func runAudit(args []string) error {
 		// valid
 	default:
 		return usageError("usage: governor audit <path-or-zip> [flags]")
+	}
+
+	// Validate mutual exclusivity of git filter flags.
+	gitFilterCount := 0
+	if *changedOnly {
+		gitFilterCount++
+	}
+	if *changedSince != "" {
+		gitFilterCount++
+	}
+	if *staged {
+		gitFilterCount++
+	}
+	if gitFilterCount > 1 {
+		return errors.New("--changed-only, --changed-since, and --staged are mutually exclusive")
 	}
 
 	// Resolve suppressions path: explicit flag > default location.
@@ -217,38 +239,48 @@ func runAudit(args []string) error {
 
 	updateCh := update.CheckAsync()
 
-	selection, err := checks.ResolveAuditSelection(checks.AuditSelectionOptions{
+	selOpts := checks.AuditSelectionOptions{
 		ChecksDir:      *checksDir,
 		NoCustomChecks: *noCustomChecks,
 		OnlyIDs:        onlyChecks.Values(),
 		SkipIDs:        skipChecks.Values(),
-	})
-	if err != nil {
-		return err
 	}
-	aiRequired := checks.SelectionRequiresAI(selection.Checks)
-	aiRuntime, err := ai.ResolveRuntime(ai.ResolveOptions{
-		Profile:       strings.TrimSpace(*aiProfile),
-		Provider:      strings.TrimSpace(*aiProvider),
-		Model:         strings.TrimSpace(*aiModel),
-		AuthMode:      strings.TrimSpace(*aiAuthMode),
-		Bin:           strings.TrimSpace(aiBin),
-		BaseURL:       strings.TrimSpace(*aiBaseURL),
-		APIKeyEnv:     strings.TrimSpace(*aiAPIKeyEnv),
-		ExecutionMode: modeValue,
-		SandboxMode:   sandboxValue,
-	})
+	if *quick {
+		selOpts.EngineFilter = checks.EngineRule
+	}
+	selection, err := checks.ResolveAuditSelection(selOpts)
 	if err != nil {
 		return err
 	}
 
+	var aiRuntime ai.Runtime
 	aiInfo := trust.AIBinary{}
-	if aiRequired && aiRuntime.UsesCLI() {
-		aiInfo, err = trust.ResolveAIBinary(context.Background(), aiRuntime.Bin, allowCustomAIBin)
+	if *quick {
+		// Quick mode: skip AI resolution entirely.
+	} else {
+		aiRequired := checks.SelectionRequiresAI(selection.Checks)
+		aiRuntime, err = ai.ResolveRuntime(ai.ResolveOptions{
+			Profile:       strings.TrimSpace(*aiProfile),
+			Provider:      strings.TrimSpace(*aiProvider),
+			Model:         strings.TrimSpace(*aiModel),
+			AuthMode:      strings.TrimSpace(*aiAuthMode),
+			Bin:           strings.TrimSpace(aiBin),
+			BaseURL:       strings.TrimSpace(*aiBaseURL),
+			APIKeyEnv:     strings.TrimSpace(*aiAPIKeyEnv),
+			ExecutionMode: modeValue,
+			SandboxMode:   sandboxValue,
+		})
 		if err != nil {
 			return err
 		}
-		aiRuntime.Bin = aiInfo.ResolvedPath
+
+		if aiRequired && aiRuntime.UsesCLI() {
+			aiInfo, err = trust.ResolveAIBinary(context.Background(), aiRuntime.Bin, allowCustomAIBin)
+			if err != nil {
+				return err
+			}
+			aiRuntime.Bin = aiInfo.ResolvedPath
+		}
 	}
 
 	useTUI := isInteractiveTerminal()
@@ -288,6 +320,10 @@ func runAudit(args []string) error {
 		SuppressionsPath: strings.TrimSpace(*suppressionsPath),
 		ShowSuppressed:   *showSuppressed,
 		IncludeTestFiles: *includeTestFiles,
+		Quick:            *quick,
+		ChangedOnly:      *changedOnly,
+		ChangedSince:     *changedSince,
+		StagedOnly:       *staged,
 	}
 
 	if useTUI {
@@ -1936,6 +1972,7 @@ func runCI(args []string) error {
 	suppressionsPath := fs.String("suppressions", "", "Path to suppressions YAML file")
 	showSuppressed := fs.Bool("show-suppressed", false, "Include suppressed findings in reports")
 	includeTestFiles := fs.Bool("include-test-files", false, "Include test files in security scanning")
+	quick := fs.Bool("quick", false, "Run only rule-engine checks (no AI, no network)")
 
 	var onlyChecks listFlag
 	var skipChecks listFlag
@@ -1980,38 +2017,48 @@ func runCI(args []string) error {
 		sandboxValue = ""
 	}
 
-	selection, err := checks.ResolveAuditSelection(checks.AuditSelectionOptions{
+	ciSelOpts := checks.AuditSelectionOptions{
 		ChecksDir:      *checksDir,
 		NoCustomChecks: *noCustomChecks,
 		OnlyIDs:        onlyChecks.Values(),
 		SkipIDs:        skipChecks.Values(),
-	})
-	if err != nil {
-		return err
 	}
-	aiRequired := checks.SelectionRequiresAI(selection.Checks)
-	aiRuntime, err := ai.ResolveRuntime(ai.ResolveOptions{
-		Profile:       strings.TrimSpace(*aiProfile),
-		Provider:      strings.TrimSpace(*aiProvider),
-		Model:         strings.TrimSpace(*aiModel),
-		AuthMode:      strings.TrimSpace(*aiAuthMode),
-		Bin:           strings.TrimSpace(aiBin),
-		BaseURL:       strings.TrimSpace(*aiBaseURL),
-		APIKeyEnv:     strings.TrimSpace(*aiAPIKeyEnv),
-		ExecutionMode: modeValue,
-		SandboxMode:   sandboxValue,
-	})
+	if *quick {
+		ciSelOpts.EngineFilter = checks.EngineRule
+	}
+	selection, err := checks.ResolveAuditSelection(ciSelOpts)
 	if err != nil {
 		return err
 	}
 
+	var aiRuntime ai.Runtime
 	aiInfo := trust.AIBinary{}
-	if aiRequired && aiRuntime.UsesCLI() {
-		aiInfo, err = trust.ResolveAIBinary(context.Background(), aiRuntime.Bin, allowCustomAIBin)
+	if *quick {
+		// Quick mode: skip AI resolution entirely.
+	} else {
+		aiRequired := checks.SelectionRequiresAI(selection.Checks)
+		aiRuntime, err = ai.ResolveRuntime(ai.ResolveOptions{
+			Profile:       strings.TrimSpace(*aiProfile),
+			Provider:      strings.TrimSpace(*aiProvider),
+			Model:         strings.TrimSpace(*aiModel),
+			AuthMode:      strings.TrimSpace(*aiAuthMode),
+			Bin:           strings.TrimSpace(aiBin),
+			BaseURL:       strings.TrimSpace(*aiBaseURL),
+			APIKeyEnv:     strings.TrimSpace(*aiAPIKeyEnv),
+			ExecutionMode: modeValue,
+			SandboxMode:   sandboxValue,
+		})
 		if err != nil {
 			return err
 		}
-		aiRuntime.Bin = aiInfo.ResolvedPath
+
+		if aiRequired && aiRuntime.UsesCLI() {
+			aiInfo, err = trust.ResolveAIBinary(context.Background(), aiRuntime.Bin, allowCustomAIBin)
+			if err != nil {
+				return err
+			}
+			aiRuntime.Bin = aiInfo.ResolvedPath
+		}
 	}
 
 	// Resolve suppressions path.
@@ -2052,6 +2099,7 @@ func runCI(args []string) error {
 		SuppressionsPath: strings.TrimSpace(*suppressionsPath),
 		ShowSuppressed:   *showSuppressed,
 		IncludeTestFiles: *includeTestFiles,
+		Quick:            *quick,
 	}
 
 	auditOpts.Progress = progress.NewPlainSink(os.Stderr)
@@ -2325,7 +2373,11 @@ func printUsage() {
 	fmt.Println("  governor findings <suppress|list|expired> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
 	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable>] [flags]")
+	fmt.Println("  governor hooks <install|remove|status>")
 	fmt.Println("  governor clear [--without-last [N]]")
+	fmt.Println("")
+	fmt.Println("Flags (hooks install):")
+	fmt.Println("  --force             Overwrite existing pre-commit hook")
 	fmt.Println("")
 	fmt.Println("Flags (clear):")
 	fmt.Println("  --without-last [N]  Preserve the N most recent runs (default 1 if N omitted)")
@@ -2359,6 +2411,10 @@ func printUsage() {
 	fmt.Println("  --show-suppressed   Include suppressed findings in reports")
 	fmt.Println("  --include-test-files  Include test files in security scanning (excluded by default)")
 	fmt.Println("  --no-tui            Disable interactive terminal UI")
+	fmt.Println("  --quick             Run only rule-engine checks (no AI, no network)")
+	fmt.Println("  --changed-only      Scan only files with uncommitted changes (vs HEAD)")
+	fmt.Println("  --changed-since <ref>  Scan only files changed since a git ref")
+	fmt.Println("  --staged            Scan only staged files (for pre-commit use)")
 	fmt.Println("")
 	fmt.Println("Flags (ci):")
 	fmt.Println("  --fail-on <sev>     Exit non-zero threshold (default high)")
@@ -2465,6 +2521,127 @@ func applyConfig(cfg config.Config, setFlags map[string]struct{},
 			*ptr = *cfgVal
 		}
 	}
+}
+
+const (
+	hookMarkerStart = "# >>> governor pre-commit hook >>>"
+	hookMarkerEnd   = "# <<< governor pre-commit hook <<<"
+	hookScript      = `#!/bin/sh
+# >>> governor pre-commit hook >>>
+governor audit --staged --quick --fail-on high
+# <<< governor pre-commit hook <<<
+`
+)
+
+func runHooks(args []string) error {
+	if len(args) == 0 {
+		return usageError("usage: governor hooks <install|remove|status>")
+	}
+	switch args[0] {
+	case "install":
+		return runHooksInstall(args[1:])
+	case "remove":
+		return runHooksRemove(args[1:])
+	case "status":
+		return runHooksStatus(args[1:])
+	default:
+		return usageError(fmt.Sprintf("unknown hooks subcommand %q", args[0]))
+	}
+}
+
+func runHooksInstall(args []string) error {
+	fs := flag.NewFlagSet("hooks install", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+	force := fs.Bool("force", false, "Overwrite existing pre-commit hook")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	hookPath, err := resolvePreCommitHookPath()
+	if err != nil {
+		return err
+	}
+
+	if existing, statErr := os.ReadFile(hookPath); statErr == nil {
+		if strings.Contains(string(existing), hookMarkerStart) {
+			fmt.Println("governor pre-commit hook is already installed")
+			return nil
+		}
+		if !*force {
+			return fmt.Errorf("pre-commit hook already exists at %s (use --force to overwrite)", hookPath)
+		}
+	}
+
+	hooksDir := filepath.Dir(hookPath)
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return fmt.Errorf("create hooks directory: %w", err)
+	}
+
+	if err := os.WriteFile(hookPath, []byte(hookScript), 0o755); err != nil {
+		return fmt.Errorf("write pre-commit hook: %w", err)
+	}
+	fmt.Printf("installed governor pre-commit hook at %s\n", hookPath)
+	return nil
+}
+
+func runHooksRemove(_ []string) error {
+	hookPath, err := resolvePreCommitHookPath()
+	if err != nil {
+		return err
+	}
+
+	content, readErr := os.ReadFile(hookPath)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			fmt.Println("no pre-commit hook found")
+			return nil
+		}
+		return fmt.Errorf("read pre-commit hook: %w", readErr)
+	}
+
+	if !strings.Contains(string(content), hookMarkerStart) {
+		return fmt.Errorf("pre-commit hook at %s was not installed by governor (missing marker)", hookPath)
+	}
+
+	if err := os.Remove(hookPath); err != nil {
+		return fmt.Errorf("remove pre-commit hook: %w", err)
+	}
+	fmt.Printf("removed governor pre-commit hook from %s\n", hookPath)
+	return nil
+}
+
+func runHooksStatus(_ []string) error {
+	hookPath, err := resolvePreCommitHookPath()
+	if err != nil {
+		return err
+	}
+
+	content, readErr := os.ReadFile(hookPath)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			fmt.Println("status: not installed")
+			return nil
+		}
+		return fmt.Errorf("read pre-commit hook: %w", readErr)
+	}
+
+	if strings.Contains(string(content), hookMarkerStart) {
+		fmt.Println("status: installed")
+		fmt.Printf("path:   %s\n", hookPath)
+	} else {
+		fmt.Println("status: not installed (hook exists but not managed by governor)")
+		fmt.Printf("path:   %s\n", hookPath)
+	}
+	return nil
+}
+
+func resolvePreCommitHookPath() (string, error) {
+	out, err := exec.Command("git", "rev-parse", "--git-dir").Output()
+	if err != nil {
+		return "", fmt.Errorf("not a git repository (or git not installed): %w", err)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	return filepath.Join(gitDir, "hooks", "pre-commit"), nil
 }
 
 type listFlag struct {

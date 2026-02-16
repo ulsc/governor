@@ -207,21 +207,79 @@ Governor ships with 10 built-in checks that run by default:
 | `path_traversal` | Path Traversal Patterns | Directory traversal via user input |
 | `insecure_crypto` | Insecure Cryptography | Weak algorithms (MD5, SHA-1, DES, ECB mode) |
 
-## Running Only Rule-Based Checks (No AI)
+## Quick Mode (Rule-Only, No AI)
 
-If you don't have an AI provider configured, you can still audit using only the deterministic rule-based checks:
+Use `--quick` to run only the deterministic rule-engine checks. No AI provider, no network calls, no API keys needed:
 
 ```bash
-# Run only rule-based checks by specifying them
-governor audit ./my-app \
-  --only-check prompt_injection \
-  --only-check hardcoded_credentials \
-  --only-check command_injection \
-  --only-check path_traversal \
-  --only-check insecure_crypto
+governor audit ./my-app --quick
 ```
 
-These checks use pattern matching (contains/regex) and require no network access or API keys.
+This runs all `engine: rule` checks (both built-in and custom) and typically completes in under a second. It's ideal for:
+- Local development feedback loops
+- Environments without AI provider access
+- Pre-commit hooks (see [Hooks](#pre-commit-hook) below)
+
+You can also select individual rule checks explicitly:
+
+```bash
+governor audit ./my-app \
+  --only-check prompt_injection \
+  --only-check hardcoded_credentials
+```
+
+## Incremental Scanning (Git-Aware)
+
+Instead of scanning your entire codebase every time, Governor can target only the files you've changed. Three mutually exclusive flags control this:
+
+| Flag | Scans |
+|------|-------|
+| `--changed-only` | Files with uncommitted changes vs HEAD |
+| `--changed-since <ref>` | Files changed since a git ref (branch, tag, or commit) |
+| `--staged` | Files staged in the git index |
+
+All three require a git repository.
+
+```bash
+# Scan only uncommitted changes
+governor audit . --changed-only
+
+# Scan only changes since branching from main
+governor audit . --changed-since main
+
+# Scan only staged files
+governor audit . --staged
+```
+
+These flags combine naturally with `--quick` for sub-second feedback:
+
+```bash
+# Quick rule scan on just the files you changed
+governor audit . --changed-only --quick
+```
+
+The audit report metadata includes a `scan_mode` field indicating the filter applied (e.g., `"staged"`, `"changed-only"`, `"changed-since main"`).
+
+## Pre-Commit Hook
+
+Governor can install a git pre-commit hook that automatically scans staged files before every commit:
+
+```bash
+governor hooks install
+```
+
+This writes a pre-commit hook that runs `governor audit --staged --quick --fail-on high`. Commits are blocked if any high-severity findings are detected.
+
+```bash
+# Check hook status
+governor hooks status
+
+# Remove the hook
+governor hooks remove
+
+# Overwrite an existing pre-commit hook
+governor hooks install --force
+```
 
 ## Filtering Checks
 

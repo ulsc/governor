@@ -37,6 +37,7 @@ Disclaimer note:
 - [Audit Command](#audit-command)
 - [Isolated Runs](#isolated-runs)
 - [Checks Command](#checks-command)
+- [Hooks Command](#hooks-command)
 - [Custom Check Format](#custom-check-format)
 - [Extractor (Docs to Checks)](#extractor-docs-to-checks)
 - [Checks Docs](#checks-docs)
@@ -277,11 +278,19 @@ governor audit <path-or-zip> [flags]
 - `--only-check <id>`: run only specified check IDs (repeatable)
 - `--skip-check <id>`: skip specified check IDs (repeatable)
 - `--no-custom-checks`: run built-in checks only
+- `--quick`: run only rule-engine checks (no AI, no network)
+- `--changed-only`: scan only files with uncommitted changes (vs HEAD)
+- `--changed-since <ref>`: scan only files changed since a git ref (branch, tag, or commit)
+- `--staged`: scan only staged files (for pre-commit use)
 - `--tui`: force interactive TUI
 - `--no-tui`: force plain mode
 - `--timeout <duration>`: per-check timeout (default `4m`, set `0` to disable)
 - `--out <dir>`: custom output directory
 - `--keep-workspace-error`: keep staged `workspace/` only for warning/failed runs (default deletes)
+
+Notes:
+- `--quick` and AI flags (`--ai-profile`, etc.) are mutually exclusive.
+- `--changed-only`, `--changed-since`, and `--staged` are mutually exclusive. All three require a git repository.
 
 ### Examples
 
@@ -294,6 +303,18 @@ governor audit ./my-app --only-check appsec
 
 # Run selected custom check
 governor audit ./my-app --only-check authz-missing-role-check
+
+# Quick rule-only scan (no AI, instant)
+governor audit ./my-app --quick
+
+# Scan only uncommitted changes
+governor audit ./my-app --changed-only
+
+# Scan only changes since a branch point
+governor audit ./my-app --changed-since main
+
+# Quick scan of staged files (ideal for pre-commit)
+governor audit ./my-app --staged --quick --fail-on high
 ```
 
 ## Isolated Runs
@@ -497,6 +518,50 @@ governor checks disable insecure-admin-surface
 Default behavior without `--checks-dir`:
 - Searches `./.governor/checks` first, then `~/.governor/checks`.
 - Enables/disables the first matching check by that precedence.
+
+## Hooks Command
+
+```bash
+governor hooks <install|remove|status>
+```
+
+Manage a git pre-commit hook that runs Governor automatically on every commit.
+
+### `hooks install`
+
+Installs a pre-commit hook that runs `governor audit --staged --quick --fail-on high`:
+
+```bash
+governor hooks install
+```
+
+The hook runs rule-engine checks against staged files and blocks the commit if any high-severity findings are detected. This provides instant security feedback without AI calls or network access.
+
+If a pre-commit hook already exists, `install` refuses to overwrite it unless `--force` is passed:
+
+```bash
+governor hooks install --force
+```
+
+Installing again when the Governor hook is already present is a no-op (idempotent).
+
+### `hooks remove`
+
+Removes the Governor pre-commit hook:
+
+```bash
+governor hooks remove
+```
+
+Only removes hooks installed by Governor (identified by a marker comment). Refuses to remove hooks not installed by Governor.
+
+### `hooks status`
+
+Shows whether the Governor pre-commit hook is currently installed:
+
+```bash
+governor hooks status
+```
 
 ## Custom Check Format
 

@@ -14,6 +14,10 @@ Governor is designed for automated pipelines. In non-interactive environments (C
 | `--only-check <id>` | Run only specific check IDs (repeatable) |
 | `--skip-check <id>` | Skip specific check IDs (repeatable) |
 | `--workers <1-3>` | Concurrent worker count (default 3) |
+| `--quick` | Run only rule-engine checks (no AI, no network) |
+| `--changed-only` | Scan only files with uncommitted changes (vs HEAD) |
+| `--changed-since <ref>` | Scan only files changed since a git ref |
+| `--staged` | Scan only staged files |
 
 ## Exit Codes
 
@@ -209,18 +213,48 @@ The SARIF upload requires `security-events: write` permission. Findings appear a
 
 ### Rule-Only Audit (No AI Key Required)
 
-If you only need deterministic rule checks (no AI calls), you can run without an API key:
+Use `--quick` to run only deterministic rule-engine checks. No API key, no network, no AI binary needed:
 
 ```yaml
       - name: Run rule-only audit
         run: |
           governor audit . \
-            --only-check prompt-injection-local \
+            --quick \
             --fail-on high \
             --out .governor/runs/ci
 ```
 
-Rule-engine checks (`engine: rule`) execute locally with no network or model calls.
+Rule-engine checks (`engine: rule`) execute locally with no network or model calls. This is the fastest audit mode and works in any environment.
+
+### Incremental PR Audit (Changed Files Only)
+
+Scan only the files changed in a PR by using `--changed-since` to compare against the base branch:
+
+```yaml
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run incremental audit on PR changes
+        run: |
+          governor audit . \
+            --changed-since origin/main \
+            --fail-on high \
+            --out .governor/runs/ci
+```
+
+This runs all checks (AI + rule) but only against the files that differ from `main`. Combine with `--quick` for instant rule-only feedback on changed files:
+
+```yaml
+      - name: Quick rule scan on PR changes
+        run: |
+          governor audit . \
+            --changed-since origin/main \
+            --quick \
+            --fail-on high \
+            --out .governor/runs/ci
+```
 
 ## GitLab CI
 
@@ -319,3 +353,20 @@ Every audit run produces artifacts in the output directory (default `.governor/r
 | `worker-<id>-output.json` | Per-check raw output |
 
 In CI, always upload the entire output directory as an artifact with `if: always()` so you can inspect results even on failure. Keep `.governor/.gitignore` tracked so `runs/` artifacts stay out of version control.
+
+## Pre-Commit Hook
+
+Governor includes a hook installer for local developer workflows. The hook runs `governor audit --staged --quick --fail-on high` on every commit, catching security issues before they reach CI.
+
+```bash
+# Install the pre-commit hook
+governor hooks install
+
+# Check if the hook is installed
+governor hooks status
+
+# Remove the hook
+governor hooks remove
+```
+
+The hook scans only staged files using rule-engine checks, so it completes in under a second with no network access. See [Getting Started](./getting-started.md#pre-commit-hook) for more details.
