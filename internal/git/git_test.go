@@ -67,7 +67,7 @@ func TestChangedFilesVsHEAD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files, err := ChangedFiles(dir, "")
+	_, err := ChangedFiles(dir, "")
 	if err != nil {
 		t.Fatalf("ChangedFiles: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestChangedFilesVsHEAD(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "initial.txt"), []byte("modified"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	files, err = ChangedFiles(dir, "")
+	files, err := ChangedFiles(dir, "")
 	if err != nil {
 		t.Fatalf("ChangedFiles: %v", err)
 	}
