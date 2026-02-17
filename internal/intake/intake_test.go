@@ -1,6 +1,7 @@
 package intake
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -464,6 +465,44 @@ func TestSkipFile_SecurityRelevantReason(t *testing.T) {
 				t.Errorf("skipFile(%q) reason=%q, want %q", tc.filename, reason, tc.wantReason)
 			}
 		})
+	}
+}
+
+func TestStageFolder_SecurityRelevantWarning(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "main.go"), "package main")
+	mustWrite(t, filepath.Join(root, "server.pem"), "cert")
+	mustWrite(t, filepath.Join(root, ".env"), "SECRET=x")
+
+	// Capture stderr
+	old := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	out := t.TempDir()
+	_, err := Stage(StageOptions{
+		InputPath: root,
+		OutDir:    out,
+		MaxFiles:  10,
+		MaxBytes:  1024 * 1024,
+	})
+	if err != nil {
+		_ = w.Close()
+		os.Stderr = old
+		t.Fatalf("stage failed: %v", err)
+	}
+
+	_ = w.Close()
+	var buf strings.Builder
+	_, _ = io.Copy(&buf, r)
+	os.Stderr = old
+
+	stderr := buf.String()
+	if !strings.Contains(stderr, "security-relevant files skipped") {
+		t.Fatalf("expected security-relevant warning on stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "secrets scanner") {
+		t.Fatalf("expected secrets scanner suggestion in warning, got: %q", stderr)
 	}
 }
 

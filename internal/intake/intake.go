@@ -149,6 +149,10 @@ func Stage(opts StageOptions) (StageResult, error) {
 		}
 	}
 
+	if manifest.SecurityRelevantSkipped > 0 {
+		fmt.Fprintf(os.Stderr, "[governor] warning: %d security-relevant files skipped (secrets, keys, certs) — consider running a dedicated secrets scanner\n", manifest.SecurityRelevantSkipped)
+	}
+
 	sort.Slice(manifest.Files, func(i, j int) bool {
 		return manifest.Files[i].Path < manifest.Files[j].Path
 	})
