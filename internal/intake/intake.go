@@ -49,11 +49,14 @@ var skipFileExts = map[string]struct{}{
 	".png": {}, ".jpg": {}, ".jpeg": {}, ".gif": {}, ".pdf": {}, ".zip": {}, ".gz": {}, ".tar": {}, ".tgz": {},
 	".mp3": {}, ".wav": {}, ".mp4": {}, ".mov": {}, ".avi": {}, ".woff": {}, ".woff2": {}, ".ttf": {},
 	".exe": {}, ".dll": {}, ".so": {}, ".dylib": {}, ".class": {}, ".jar": {},
-	".pem": {}, ".key": {}, ".p12": {}, ".pfx": {}, ".crt": {},
 }
 
 var skipFileNames = map[string]struct{}{
 	".DS_Store": {},
+}
+
+var securityRelevantExts = map[string]struct{}{
+	".pem": {}, ".key": {}, ".p12": {}, ".pfx": {}, ".crt": {},
 }
 
 func Stage(opts StageOptions) (StageResult, error) {
@@ -226,6 +229,9 @@ func stageFolderToWorkspace(srcRoot string, dstRoot string, manifest *model.Inpu
 		if reason, skip := skipFile(name, rel, info.Size(), info.Mode()); skip {
 			manifest.SkippedByReason[reason]++
 			manifest.SkippedFiles++
+			if reason == "security_relevant_excluded" {
+				manifest.SecurityRelevantSkipped++
+			}
 			return nil
 		}
 
@@ -257,11 +263,8 @@ func skipFile(name string, rel string, size int64, mode os.FileMode) (reason str
 		fmt.Fprintf(os.Stderr, "[governor] warning: skipping oversized file (%d bytes): %s\n", size, rel)
 		return "file_too_large", true
 	}
-	if isSensitiveFileName(name) {
-		return "skip_secret", true
-	}
-	if isSensitiveFilePath(rel) {
-		return "skip_secret", true
+	if isSensitiveFileName(name) || isSensitiveFilePath(rel) {
+		return "security_relevant_excluded", true
 	}
 	if _, ok := skipFileNames[name]; ok {
 		return "skip_name", true
@@ -270,6 +273,9 @@ func skipFile(name string, rel string, size int64, mode os.FileMode) (reason str
 		return "empty", true
 	}
 	ext := strings.ToLower(filepath.Ext(name))
+	if _, ok := securityRelevantExts[ext]; ok {
+		return "security_relevant_excluded", true
+	}
 	if _, ok := skipFileExts[ext]; ok {
 		return "skip_ext", true
 	}

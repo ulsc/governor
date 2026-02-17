@@ -137,6 +137,9 @@ func extractZipFile(destAbs string, f *zip.File, manifest *model.InputManifest, 
 	if reason, skip := skipFile(filepath.Base(cleanName), cleanName, f.FileInfo().Size(), mode); skip {
 		manifest.SkippedByReason[reason]++
 		manifest.SkippedFiles++
+		if reason == "security_relevant_excluded" {
+			manifest.SecurityRelevantSkipped++
+		}
 		return nil
 	}
 

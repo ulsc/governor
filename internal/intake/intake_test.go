@@ -44,8 +44,8 @@ func TestStageFolder_BuildManifestAndSkip(t *testing.T) {
 	if got := res.Manifest.SkippedByReason["skip_name"]; got < 1 {
 		t.Fatalf("expected skip_name >= 1, got %d", got)
 	}
-	if got := res.Manifest.SkippedByReason["skip_secret"]; got < 1 {
-		t.Fatalf("expected skip_secret >= 1, got %d", got)
+	if got := res.Manifest.SkippedByReason["security_relevant_excluded"]; got < 1 {
+		t.Fatalf("expected security_relevant_excluded >= 1, got %d", got)
 	}
 	if _, err := os.Stat(filepath.Join(res.WorkspacePath, "main.go")); err != nil {
 		t.Fatalf("expected copied file in workspace: %v", err)
@@ -405,6 +405,65 @@ func TestStageFolder_GovernorIgnoreMissing(t *testing.T) {
 
 	if res.Manifest.IncludedFiles != 1 {
 		t.Fatalf("expected 1 included file, got %d", res.Manifest.IncludedFiles)
+	}
+}
+
+func TestStageFolder_SecurityRelevantFilesCounted(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "main.go"), "package main")
+	mustWrite(t, filepath.Join(root, "server.pem"), "-----BEGIN CERTIFICATE-----")
+	mustWrite(t, filepath.Join(root, "private.key"), "-----BEGIN PRIVATE KEY-----")
+	mustWrite(t, filepath.Join(root, ".env"), "SECRET=abc")
+
+	out := t.TempDir()
+	res, err := Stage(StageOptions{
+		InputPath: root,
+		OutDir:    out,
+		MaxFiles:  10,
+		MaxBytes:  1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("stage failed: %v", err)
+	}
+
+	if res.Manifest.SecurityRelevantSkipped != 3 {
+		t.Fatalf("expected 3 security-relevant skipped, got %d", res.Manifest.SecurityRelevantSkipped)
+	}
+	if got := res.Manifest.SkippedByReason["security_relevant_excluded"]; got != 3 {
+		t.Fatalf("expected security_relevant_excluded == 3, got %d", got)
+	}
+}
+
+func TestSkipFile_SecurityRelevantReason(t *testing.T) {
+	tests := []struct {
+		name       string
+		filename   string
+		wantReason string
+		wantSkip   bool
+	}{
+		{"pem file", "server.pem", "security_relevant_excluded", true},
+		{"key file", "private.key", "security_relevant_excluded", true},
+		{"p12 file", "cert.p12", "security_relevant_excluded", true},
+		{"pfx file", "cert.pfx", "security_relevant_excluded", true},
+		{"crt file", "ca.crt", "security_relevant_excluded", true},
+		{"env file", ".env", "security_relevant_excluded", true},
+		{"env variant", ".env.production", "security_relevant_excluded", true},
+		{"secrets yaml", "secrets.yaml", "security_relevant_excluded", true},
+		{"credentials json", "credentials.json", "security_relevant_excluded", true},
+		{"png still skipped", "image.png", "skip_ext", true},
+		{"exe still skipped", "app.exe", "skip_ext", true},
+		{"go not skipped", "main.go", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, skip := skipFile(tc.filename, tc.filename, 100, 0o644)
+			if skip != tc.wantSkip {
+				t.Errorf("skipFile(%q) skip=%v, want %v", tc.filename, skip, tc.wantSkip)
+			}
+			if reason != tc.wantReason {
+				t.Errorf("skipFile(%q) reason=%q, want %q", tc.filename, reason, tc.wantReason)
+			}
+		})
 	}
 }
 

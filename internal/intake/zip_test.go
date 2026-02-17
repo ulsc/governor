@@ -57,8 +57,8 @@ func TestStageZip_SafeAndFiltered(t *testing.T) {
 	if got := res.Manifest.SkippedByReason["skip_dir"]; got == 0 {
 		t.Fatalf("expected skip_dir > 0, got %d", got)
 	}
-	if got := res.Manifest.SkippedByReason["skip_secret"]; got == 0 {
-		t.Fatalf("expected skip_secret > 0, got %d", got)
+	if got := res.Manifest.SkippedByReason["security_relevant_excluded"]; got == 0 {
+		t.Fatalf("expected security_relevant_excluded > 0, got %d", got)
 	}
 	if _, err := os.Stat(filepath.Join(res.WorkspacePath, ".env")); !os.IsNotExist(err) {
 		t.Fatalf("expected secret file to be excluded from workspace")

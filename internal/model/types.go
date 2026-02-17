@@ -57,8 +57,9 @@ type InputManifest struct {
 	InputType       string         `json:"input_type"`
 	IncludedFiles   int            `json:"included_files"`
 	IncludedBytes   int64          `json:"included_bytes"`
-	SkippedFiles    int            `json:"skipped_files"`
-	SkippedByReason map[string]int `json:"skipped_by_reason"`
+	SkippedFiles             int            `json:"skipped_files"`
+	SecurityRelevantSkipped  int            `json:"security_relevant_skipped,omitempty"`
+	SkippedByReason          map[string]int `json:"skipped_by_reason"`
 	Files           []ManifestFile `json:"files"`
 	GeneratedAt     time.Time      `json:"generated_at"`
 }
