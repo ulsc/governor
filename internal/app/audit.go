@@ -62,7 +62,8 @@ type AuditOptions struct {
 	ChangedSince string
 	StagedOnly   bool
 
-	IgnoreFile string
+	IgnoreFile       string
+	MaxRuleFileBytes int
 }
 
 type ArtifactPaths struct {
@@ -238,15 +239,16 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 	aiRequired := checks.SelectionRequiresAI(selection.Checks)
 
 	workerResults := worker.RunAll(ctx, stage.WorkspacePath, stage.Manifest, selection.Checks, worker.RunOptions{
-		AIRuntime:   opts.AIRuntime,
-		CodexBin:    opts.AIBin,
-		OutDir:      runDir,
-		MaxParallel: opts.Workers,
-		Timeout:     opts.Timeout,
-		Verbose:     opts.Verbose,
-		Sink:        sink,
-		Mode:        opts.ExecutionMode,
-		SandboxMode: opts.SandboxMode,
+		AIRuntime:        opts.AIRuntime,
+		CodexBin:         opts.AIBin,
+		OutDir:           runDir,
+		MaxParallel:      opts.Workers,
+		Timeout:          opts.Timeout,
+		Verbose:          opts.Verbose,
+		Sink:             sink,
+		Mode:             opts.ExecutionMode,
+		SandboxMode:      opts.SandboxMode,
+		MaxRuleFileBytes: opts.MaxRuleFileBytes,
 
 		SandboxDenyHostFallback: opts.SandboxDenyHostFallback,
 		IncludeTestFiles:        opts.IncludeTestFiles,
@@ -287,6 +289,16 @@ func RunAudit(ctx context.Context, opts AuditOptions) (report model.AuditReport,
 				Message: msg,
 			})
 		}
+	}
+
+	if warning := checkSuppressionRatio(len(findings), len(suppressedFindings)); warning != "" {
+		runWarnings = append(runWarnings, warning)
+		sink.Emit(progress.Event{
+			Type:    progress.EventRunWarning,
+			RunID:   runID,
+			Status:  "warning",
+			Message: warning,
+		})
 	}
 
 	runWarnings = redact.Strings(runWarnings)
@@ -578,6 +590,20 @@ func loadSuppressions(suppressionsPath, workspacePath string, sink progress.Sink
 		})
 	}
 	return rules, inline
+}
+
+// checkSuppressionRatio returns a warning message if the suppression ratio is
+// suspiciously high (>50% and at least 5 suppressed). Returns "" if no warning.
+func checkSuppressionRatio(activeCount, suppressedCount int) string {
+	total := activeCount + suppressedCount
+	if total == 0 || suppressedCount < 5 {
+		return ""
+	}
+	ratio := float64(suppressedCount) / float64(total)
+	if ratio >= 0.5 {
+		return fmt.Sprintf("%.0f%% of findings are suppressed (%d/%d) — review suppressions for overly broad rules", ratio*100, suppressedCount, total)
+	}
+	return ""
 }
 
 func buildCategoryCounts(findings []model.Finding) map[string]int {
