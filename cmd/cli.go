@@ -19,6 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"governor/internal/ai"
 	"governor/internal/app"
+	"governor/internal/badge"
 	"governor/internal/checks"
 	"governor/internal/checkstui"
 	"governor/internal/comment"
@@ -61,6 +62,8 @@ func Execute(args []string) error {
 		return runDiff(args[1:])
 	case "scan":
 		return runScan(args[1:])
+	case "badge":
+		return runBadge(args[1:])
 	case "init":
 		return runInit(args[1:])
 	case "clear":
@@ -2384,6 +2387,7 @@ func printUsage() {
 	fmt.Println("  governor hooks <install|remove|status>")
 	fmt.Println("  governor diff <old.json> <new.json> [flags]")
 	fmt.Println("  governor scan <file...> [flags]")
+	fmt.Println("  governor badge <audit.json> [flags]")
 	fmt.Println("  governor clear [--without-last [N]]")
 	fmt.Println("")
 	fmt.Println("Flags (hooks install):")
@@ -2916,4 +2920,72 @@ func (f *listFlag) Values() []string {
 		}
 	}
 	return out
+}
+
+func runBadge(args []string) error {
+	fs := flag.NewFlagSet("badge", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	out := fs.String("out", "", "Output file path (default governor-badge.svg or governor-badge.json)")
+	format := fs.String("format", "svg", "Output format: svg|shields-json")
+	style := fs.String("style", "flat", "Badge style: flat|flat-square")
+	label := fs.String("label", "governor", "Badge label text")
+
+	var positionalInput string
+	parseArgs := args
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		positionalInput = args[0]
+		parseArgs = args[1:]
+	}
+
+	if err := fs.Parse(parseArgs); err != nil {
+		return err
+	}
+	remaining := fs.Args()
+	switch {
+	case positionalInput == "" && len(remaining) == 1:
+		positionalInput = remaining[0]
+	case positionalInput != "" && len(remaining) == 0:
+		// valid
+	default:
+		return usageError("usage: governor badge <audit.json> [flags]")
+	}
+
+	data, err := os.ReadFile(positionalInput)
+	if err != nil {
+		return fmt.Errorf("read audit file: %w", err)
+	}
+
+	var report model.AuditReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return fmt.Errorf("parse audit file: %w", err)
+	}
+
+	grade, color := badge.Grade(report.CountsBySeverity)
+
+	outputFormat := strings.ToLower(strings.TrimSpace(*format))
+	outputPath := strings.TrimSpace(*out)
+
+	var content string
+	switch outputFormat {
+	case "shields-json":
+		content = badge.ShieldsJSON(*label, grade, color)
+		if outputPath == "" {
+			outputPath = "governor-badge.json"
+		}
+	case "svg":
+		content = badge.RenderSVG(*label, grade, color, badge.ParseStyle(*style))
+		if outputPath == "" {
+			outputPath = "governor-badge.svg"
+		}
+	default:
+		return fmt.Errorf("unknown badge format %q (use svg or shields-json)", outputFormat)
+	}
+
+	if err := os.WriteFile(outputPath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("write badge: %w", err)
+	}
+
+	fmt.Printf("badge: %s (grade %s) -> %s\n", *label, grade, outputPath)
+	return nil
 }
