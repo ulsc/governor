@@ -33,6 +33,7 @@ import (
 	"governor/internal/safefile"
 	"governor/internal/scan"
 	"governor/internal/suppress"
+	"governor/internal/taps"
 	"governor/internal/trust"
 	"governor/internal/tui"
 	"governor/internal/update"
@@ -740,6 +741,14 @@ func runChecks(args []string) error {
 		return runChecksStatus(args[1:], checks.StatusEnabled)
 	case "disable":
 		return runChecksStatus(args[1:], checks.StatusDisabled)
+	case "tap":
+		return runChecksTap(args[1:])
+	case "untap":
+		return runChecksUntap(args[1:])
+	case "install-pack":
+		return runChecksInstallPack(args[1:])
+	case "list-packs":
+		return runChecksListPacks(args[1:])
 	default:
 		return usageError(fmt.Sprintf("unknown checks subcommand %q", args[0]))
 	}
@@ -1163,6 +1172,167 @@ func runChecksStatus(args []string, status checks.Status) error {
 
 	fmt.Printf("updated %s -> %s\n", id, status)
 	fmt.Printf("file: %s\n", path)
+	return nil
+}
+
+func runChecksTap(args []string) error {
+	fs := flag.NewFlagSet("governor checks tap", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	list := fs.Bool("list", false, "List all registered taps")
+	update := fs.Bool("update", false, "Update all registered taps")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *list {
+		cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
+		if err != nil {
+			return err
+		}
+		if len(cfg.Taps) == 0 {
+			fmt.Println("No taps registered. Use 'governor checks tap <source>' to add one.")
+			return nil
+		}
+		for _, t := range cfg.Taps {
+			fmt.Printf("%-30s %s\n", t.Name, t.URL)
+		}
+		return nil
+	}
+
+	if *update {
+		cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
+		if err != nil {
+			return err
+		}
+		if len(cfg.Taps) == 0 {
+			fmt.Println("No taps registered.")
+			return nil
+		}
+		for _, t := range cfg.Taps {
+			if err := taps.UpdateTap(t.Path); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to update %s: %v\n", t.Name, err)
+				continue
+			}
+			fmt.Printf("Updated %s\n", t.Name)
+		}
+		return nil
+	}
+
+	if len(fs.Args()) == 0 {
+		return errors.New("usage: governor checks tap [--list|--update] <source>")
+	}
+
+	source := fs.Args()[0]
+	name, url := taps.ResolveSource(source)
+	dest := filepath.Join(taps.DefaultTapsDir(), name)
+
+	if err := taps.CloneTap(url, dest); err != nil {
+		return err
+	}
+
+	cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
+	if err != nil {
+		return err
+	}
+	cfg.Taps = append(cfg.Taps, taps.Tap{
+		Name:    name,
+		URL:     url,
+		Path:    dest,
+		AddedAt: time.Now(),
+	})
+	if err := taps.SaveConfig(taps.DefaultConfigPath(), cfg); err != nil {
+		return err
+	}
+
+	fmt.Printf("Tapped %s\n", name)
+	return nil
+}
+
+func runChecksUntap(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: governor checks untap <name>")
+	}
+	name := args[0]
+
+	cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
+	if err != nil {
+		return err
+	}
+
+	tap, found := taps.FindTap(cfg, name)
+	if !found {
+		return fmt.Errorf("tap %q not found", name)
+	}
+
+	if err := os.RemoveAll(tap.Path); err != nil {
+		return fmt.Errorf("remove tap directory: %w", err)
+	}
+
+	taps.RemoveTap(cfg, name)
+	if err := taps.SaveConfig(taps.DefaultConfigPath(), cfg); err != nil {
+		return err
+	}
+
+	fmt.Printf("Untapped %s\n", name)
+	return nil
+}
+
+func runChecksInstallPack(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: governor checks install-pack <pack-name>")
+	}
+	packName := args[0]
+
+	cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
+	if err != nil {
+		return err
+	}
+
+	var packDir string
+	for _, t := range cfg.Taps {
+		dir, found := taps.FindPack(t.Path, packName)
+		if found {
+			packDir = dir
+			break
+		}
+	}
+	if packDir == "" {
+		return fmt.Errorf("pack %q not found in any registered tap", packName)
+	}
+
+	count, err := taps.CopyPackChecks(packDir, ".governor/checks/")
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Installed pack %s (%d checks)\n", packName, count)
+	return nil
+}
+
+func runChecksListPacks(args []string) error {
+	cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
+	if err != nil {
+		return err
+	}
+
+	if len(cfg.Taps) == 0 {
+		fmt.Println("No taps registered. Use 'governor checks tap <source>' to add one.")
+		return nil
+	}
+
+	fmt.Printf("%-20s %-20s %s\n", "SOURCE", "PACK", "DESCRIPTION")
+	for _, t := range cfg.Taps {
+		packs, err := taps.ListPacks(t.Path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to list packs for %s: %v\n", t.Name, err)
+			continue
+		}
+		for _, p := range packs {
+			fmt.Printf("%-20s %-20s %s\n", t.Name, p.Name, p.Description)
+		}
+	}
 	return nil
 }
 
@@ -2384,6 +2554,10 @@ func printUsage() {
 	fmt.Println("  governor findings <suppress|list|expired> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
 	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable>] [flags]")
+	fmt.Println("  governor checks tap <source>           Register a check pack source")
+	fmt.Println("  governor checks untap <name>           Remove a registered source")
+	fmt.Println("  governor checks install-pack <pack>    Install a check pack")
+	fmt.Println("  governor checks list-packs             List available check packs")
 	fmt.Println("  governor hooks <install|remove|status>")
 	fmt.Println("  governor diff <old.json> <new.json> [flags]")
 	fmt.Println("  governor scan <file...> [flags]")
