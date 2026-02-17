@@ -239,6 +239,61 @@ func TestApply_SeverityMatch(t *testing.T) {
 	}
 }
 
+func TestApply_WildcardCheckRejected(t *testing.T) {
+	findings := []model.Finding{
+		{Title: "SQL injection", SourceTrack: "appsec"},
+		{Title: "Hardcoded key", SourceTrack: "hardcoded_credentials"},
+	}
+
+	rules := []Rule{
+		{Check: "*", Reason: "blanket suppress"},
+	}
+	active, suppressed := Apply(findings, rules, nil)
+	if len(active) != 2 {
+		t.Fatalf("expected 2 active (wildcard rejected), got %d", len(active))
+	}
+	if len(suppressed) != 0 {
+		t.Fatalf("expected 0 suppressed, got %d", len(suppressed))
+	}
+}
+
+func TestApply_WildcardTitleRejected(t *testing.T) {
+	findings := []model.Finding{
+		{Title: "SQL injection", SourceTrack: "appsec"},
+	}
+
+	rules := []Rule{
+		{Title: "*", Reason: "blanket suppress"},
+	}
+	active, suppressed := Apply(findings, rules, nil)
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active (wildcard title rejected), got %d", len(active))
+	}
+	if len(suppressed) != 0 {
+		t.Fatalf("expected 0 suppressed, got %d", len(suppressed))
+	}
+}
+
+func TestApply_InlineWildcardRejected(t *testing.T) {
+	findings := []model.Finding{
+		{Title: "Key found", SourceTrack: "hardcoded_credentials", FileRefs: []string{"config.go"}},
+	}
+
+	inline := map[string][]InlineSuppression{
+		"config.go": {
+			{CheckID: "*", Reason: "suppress all", File: "config.go", Line: 5},
+		},
+	}
+
+	active, suppressed := Apply(findings, nil, inline)
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active (inline wildcard rejected), got %d", len(active))
+	}
+	if len(suppressed) != 0 {
+		t.Fatalf("expected 0 suppressed, got %d", len(suppressed))
+	}
+}
+
 func TestMatchGlob(t *testing.T) {
 	tests := []struct {
 		pattern string

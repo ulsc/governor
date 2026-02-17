@@ -80,6 +80,10 @@ func matchRules(f model.Finding, rules []Rule, now time.Time) (reason, source st
 
 // ruleMatches returns true if ALL specified fields in the rule match the finding.
 func ruleMatches(f model.Finding, r Rule) bool {
+	// Reject standalone wildcard check or title — too broad.
+	if r.Check == "*" || r.Title == "*" {
+		return false
+	}
 	if r.Check != "" && !matchGlob(r.Check, f.SourceTrack) {
 		return false
 	}
@@ -119,7 +123,10 @@ func matchInline(f model.Finding, inline map[string][]InlineSuppression) string 
 			continue
 		}
 		for _, s := range suppressions {
-			if s.CheckID == "*" || matchGlob(s.CheckID, f.SourceTrack) {
+			if s.CheckID == "*" {
+				continue // wildcard rejected
+			}
+			if matchGlob(s.CheckID, f.SourceTrack) {
 				reason := "inline suppression"
 				if s.Reason != "" {
 					reason = s.Reason

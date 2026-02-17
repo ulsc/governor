@@ -2,6 +2,7 @@ package suppress
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,6 +121,11 @@ func parseSuppressionComment(line string) (checkID, reason string, ok bool) {
 
 	// Check ID should be a single token (no spaces unless it's a glob)
 	if checkID == "" {
+		return "", "", false
+	}
+	// Reject standalone wildcard — use specific check IDs.
+	if checkID == "*" {
+		fmt.Fprintf(os.Stderr, "[governor] warning: ignoring wildcard suppression 'governor:suppress *' — use specific check IDs\n")
 		return "", "", false
 	}
 	return checkID, reason, true

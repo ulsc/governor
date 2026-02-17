@@ -76,6 +76,27 @@ func TestParseSuppressionComment(t *testing.T) {
 	}
 }
 
+func TestParseSuppressionComment_RejectsWildcard(t *testing.T) {
+	tests := []struct {
+		name   string
+		line   string
+		wantOK bool
+	}{
+		{"bare wildcard", "// governor:suppress *", false},
+		{"wildcard with reason", "// governor:suppress * -- suppress all", false},
+		{"specific check ok", "// governor:suppress hardcoded_credentials", true},
+		{"glob pattern ok", "// governor:suppress hardcoded_*", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, ok := parseSuppressionComment(tc.line)
+			if ok != tc.wantOK {
+				t.Errorf("parseSuppressionComment(%q) ok=%v, want %v", tc.line, ok, tc.wantOK)
+			}
+		})
+	}
+}
+
 func TestScanInline(t *testing.T) {
 	dir := t.TempDir()
 
