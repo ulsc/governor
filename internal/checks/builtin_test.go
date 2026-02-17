@@ -109,6 +109,20 @@ func TestBuiltins_VibeCodeChecksExist(t *testing.T) {
 	}
 }
 
+func TestBuiltins_VibeCodeChecksExistPart2(t *testing.T) {
+	vibeCheckIDs := []string{
+		"insecure_jwt",
+		"missing_helmet_headers",
+		"unsafe_html_rendering",
+		"unprotected_api_keys_frontend",
+	}
+	for _, id := range vibeCheckIDs {
+		if _, ok := builtinByID(id); !ok {
+			t.Fatalf("expected vibe-coding builtin %q to exist", id)
+		}
+	}
+}
+
 func builtinByID(id string) (Definition, bool) {
 	for _, def := range Builtins() {
 		if def.ID == id {
