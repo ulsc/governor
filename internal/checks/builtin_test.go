@@ -95,6 +95,20 @@ func TestBuiltins_RuleDetectorsAreBoundedAndUniquePerCheck(t *testing.T) {
 	}
 }
 
+func TestBuiltins_VibeCodeChecksExist(t *testing.T) {
+	vibeCheckIDs := []string{
+		"missing_auth_middleware",
+		"exposed_env_in_client",
+		"permissive_cors",
+		"missing_input_validation",
+	}
+	for _, id := range vibeCheckIDs {
+		if _, ok := builtinByID(id); !ok {
+			t.Fatalf("expected vibe-coding builtin %q to exist", id)
+		}
+	}
+}
+
 func builtinByID(id string) (Definition, bool) {
 	for _, def := range Builtins() {
 		if def.ID == id {
