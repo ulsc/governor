@@ -1262,5 +1262,70 @@ Note: Focus on endpoints that are clearly sensitive or expensive. Not every endp
 				Method: "builtin",
 			},
 		},
+
+		// -- Vibe-coding AI-engine checks --
+
+		{
+			APIVersion:  APIVersion,
+			ID:          "missing_rls_policies",
+			Name:        "Missing Row-Level Security",
+			Status:      StatusEnabled,
+			Source:      SourceBuiltin,
+			Engine:      EngineAI,
+			Description: "Identifies SQL schemas, migration files, and Supabase configurations missing Row-Level Security policies.",
+			Instructions: "Analyze SQL schema files, migration files, and Supabase configuration for missing Row-Level Security (RLS) policies. " +
+				"Flag tables that: (1) contain user data but lack ENABLE ROW LEVEL SECURITY, (2) have RLS enabled but no CREATE POLICY statements, " +
+				"(3) use Supabase client .from('table') calls on tables without RLS enforcement. Focus especially on tables containing PII, " +
+				"authentication data, or multi-tenant data. Do NOT flag system tables or read-only reference tables.",
+			Scope: Scope{
+				IncludeGlobs: []string{
+					"**/*.sql", "**/supabase/**", "**/*.ts", "**/*.js",
+				},
+				ExcludeGlobs: []string{
+					"**/node_modules/**", "**/vendor/**", "**/checks/builtin.go",
+				},
+			},
+			CategoriesHint: []string{"auth", "data_exposure", "vibe_coding"},
+			SeverityHint:   "high",
+			ConfidenceHint: 0.7,
+			CWE:            "CWE-862",
+			OWASP:          "A01:2021",
+			Origin: Origin{
+				Method: "builtin",
+			},
+		},
+		{
+			APIVersion:  APIVersion,
+			ID:          "insecure_defaults",
+			Name:        "Insecure Default Configuration",
+			Status:      StatusEnabled,
+			Source:      SourceBuiltin,
+			Engine:      EngineAI,
+			Description: "Identifies insecure default configurations commonly left by AI coding tools in production code.",
+			Instructions: "Identify insecure default configurations that AI coding tools commonly leave in production code. " +
+				"Check for: (1) DEBUG=True or app.debug=True in production configs, (2) NODE_ENV not set to production in deployment configs, " +
+				"(3) Default credentials like admin/admin, password/password, or test/test, (4) Insecure session cookie settings " +
+				"(missing Secure, HttpOnly, SameSite flags), (5) Missing HTTPS enforcement or TLS configuration, " +
+				"(6) Default Django SECRET_KEY or Flask secret_key values, (7) Verbose error output that exposes stack traces or internals to users. " +
+				"Focus on configuration files, environment files, and application entry points.",
+			Scope: Scope{
+				IncludeGlobs: []string{
+					"**/*.js", "**/*.ts", "**/*.py", "**/*.go", "**/*.yaml", "**/*.yml",
+					"**/*.env", "**/Dockerfile", "**/*.toml", "**/*.json",
+				},
+				ExcludeGlobs: []string{
+					"**/node_modules/**", "**/vendor/**", "**/checks/builtin.go",
+					"**/package-lock.json", "**/yarn.lock",
+				},
+			},
+			CategoriesHint: []string{"configuration", "vibe_coding"},
+			SeverityHint:   "medium",
+			ConfidenceHint: 0.6,
+			CWE:            "CWE-1188",
+			OWASP:          "A05:2021",
+			Origin: Origin{
+				Method: "builtin",
+			},
+		},
 	}
 }

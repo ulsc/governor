@@ -123,6 +123,22 @@ func TestBuiltins_VibeCodeChecksExistPart2(t *testing.T) {
 	}
 }
 
+func TestBuiltins_VibeCodeAIChecksExist(t *testing.T) {
+	vibeAICheckIDs := []string{
+		"missing_rls_policies",
+		"insecure_defaults",
+	}
+	for _, id := range vibeAICheckIDs {
+		def, ok := builtinByID(id)
+		if !ok {
+			t.Fatalf("expected vibe-coding AI builtin %q to exist", id)
+		}
+		if def.Engine != EngineAI {
+			t.Fatalf("expected %q engine=ai, got %q", id, def.Engine)
+		}
+	}
+}
+
 func builtinByID(id string) (Definition, bool) {
 	for _, def := range Builtins() {
 		if def.ID == id {
