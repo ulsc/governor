@@ -3,6 +3,7 @@ package suppress
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -316,5 +317,48 @@ func TestMatchGlob(t *testing.T) {
 				t.Errorf("matchGlob(%q, %q) = %v, want %v", tc.pattern, tc.value, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestLoad_MissingReasonReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suppressions.yaml")
+	content := `suppressions:
+  - check: hardcoded_credentials
+    files: "tests/**"
+    reason: "Test fixtures"
+  - title: "Hardcoded API key*"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for rule without reason")
+	}
+	if !strings.Contains(err.Error(), "reason is required") {
+		t.Fatalf("expected 'reason is required' error, got: %v", err)
+	}
+}
+
+func TestLoad_AllReasonsPresent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suppressions.yaml")
+	content := `suppressions:
+  - check: hardcoded_credentials
+    files: "tests/**"
+    reason: "Test fixtures"
+  - title: "Hardcoded API key*"
+    reason: "False positive"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 rules, got %d", len(rules))
 	}
 }

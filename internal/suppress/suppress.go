@@ -1,6 +1,7 @@
 package suppress
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,11 @@ func Load(path string) ([]Rule, error) {
 	var sf suppressionsFile
 	if err := yaml.Unmarshal(data, &sf); err != nil {
 		return nil, err
+	}
+	for i, rule := range sf.Suppressions {
+		if strings.TrimSpace(rule.Reason) == "" {
+			return nil, fmt.Errorf("suppression rule %d: reason is required", i+1)
+		}
 	}
 	return sf.Suppressions, nil
 }
