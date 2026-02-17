@@ -129,6 +129,7 @@ func runAudit(args []string) error {
 	changedSince := fs.String("changed-since", "", "Scan only files changed since a git ref")
 	staged := fs.Bool("staged", false, "Scan only staged files (for pre-commit use)")
 	ignoreFile := fs.String("ignore-file", "", "Path to .governorignore file (default .governorignore if present)")
+	maxRuleFileBytes := fs.Int("max-rule-file-bytes", 0, "Max file size for rule-engine scanning (default 2MB, max 20MB)")
 
 	var onlyChecks listFlag
 	var skipChecks listFlag
@@ -230,6 +231,9 @@ func runAudit(args []string) error {
 	}
 	if strings.TrimSpace(aiBin) == "" {
 		return errors.New("--ai-bin cannot be empty")
+	}
+	if *maxRuleFileBytes < 0 || (*maxRuleFileBytes > 0 && *maxRuleFileBytes > worker.MaxAllowedRuleFileBytes) {
+		return fmt.Errorf("--max-rule-file-bytes must be between 0 and %d", worker.MaxAllowedRuleFileBytes)
 	}
 	if *enableTUI && *disableTUI {
 		return errors.New("cannot set both --tui and --no-tui")
@@ -335,7 +339,8 @@ func runAudit(args []string) error {
 		ChangedSince:     *changedSince,
 		StagedOnly:       *staged,
 
-		IgnoreFile: resolveIgnoreFile(*ignoreFile),
+		IgnoreFile:       resolveIgnoreFile(*ignoreFile),
+		MaxRuleFileBytes: *maxRuleFileBytes,
 	}
 
 	if useTUI {
@@ -664,6 +669,22 @@ func loadIsolateAuditReport(outDir string) (model.AuditReport, error) {
 		return model.AuditReport{}, fmt.Errorf("parse isolated report %s: %w", paths.JSONPath, err)
 	}
 	return report, nil
+}
+
+func checkSuppressionRatioCI(maxRatio float64, report model.AuditReport) error {
+	if maxRatio >= 1.0 {
+		return nil // disabled
+	}
+	total := len(report.Findings) + report.SuppressedCount
+	if total == 0 {
+		return nil
+	}
+	ratio := float64(report.SuppressedCount) / float64(total)
+	if ratio > maxRatio {
+		return fmt.Errorf("suppression ratio %.1f%% exceeds --max-suppression-ratio %.1f%% (%d suppressed / %d total)",
+			ratio*100, maxRatio*100, report.SuppressedCount, total)
+	}
+	return nil
 }
 
 func checkFailOn(threshold string, report model.AuditReport) error {
@@ -2154,6 +2175,8 @@ func runCI(args []string) error {
 	showSuppressed := fs.Bool("show-suppressed", false, "Include suppressed findings in reports")
 	includeTestFiles := fs.Bool("include-test-files", false, "Include test files in security scanning")
 	quick := fs.Bool("quick", false, "Run only rule-engine checks (no AI, no network)")
+	maxRuleFileBytes := fs.Int("max-rule-file-bytes", 0, "Max file size for rule-engine scanning (default 2MB, max 20MB)")
+	maxSuppressionRatio := fs.Float64("max-suppression-ratio", 1.0, "Fail if suppression ratio exceeds threshold (0.0-1.0, default 1.0=disabled)")
 
 	var onlyChecks listFlag
 	var skipChecks listFlag
@@ -2184,6 +2207,9 @@ func runCI(args []string) error {
 
 	if *workers < 1 || *workers > 3 {
 		return errors.New("--workers must be between 1 and 3")
+	}
+	if *maxRuleFileBytes < 0 || (*maxRuleFileBytes > 0 && *maxRuleFileBytes > worker.MaxAllowedRuleFileBytes) {
+		return fmt.Errorf("--max-rule-file-bytes must be between 0 and %d", worker.MaxAllowedRuleFileBytes)
 	}
 
 	modeValue, err := normalizeExecutionModeFlag(*executionMode)
@@ -2281,6 +2307,7 @@ func runCI(args []string) error {
 		ShowSuppressed:   *showSuppressed,
 		IncludeTestFiles: *includeTestFiles,
 		Quick:            *quick,
+		MaxRuleFileBytes: *maxRuleFileBytes,
 	}
 
 	auditOpts.Progress = progress.NewPlainSink(os.Stderr)
@@ -2329,6 +2356,10 @@ func runCI(args []string) error {
 	failErr := checkFailOn(*failOn, report)
 	if failErr != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", failErr)
+		os.Exit(1)
+	}
+	if ratioErr := checkSuppressionRatioCI(*maxSuppressionRatio, report); ratioErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", ratioErr)
 		os.Exit(1)
 	}
 	return nil
