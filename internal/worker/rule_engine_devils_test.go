@@ -89,7 +89,7 @@ func TestExecuteRuleCheck_PotentialReDoS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := executeRuleCheck(ctx, workspace, manifest, checkDef)
+	result := executeRuleCheck(ctx, workspace, manifest, checkDef, DefaultMaxRuleFileBytes)
 	if ctx.Err() == context.DeadlineExceeded {
 		t.Error("REGEX DOS: pattern caused timeout (catastrophic backtracking)")
 	}
@@ -126,7 +126,7 @@ func TestExecuteRuleCheck_LargeFileSkip(t *testing.T) {
 		},
 	}
 
-	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef)
+	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef, DefaultMaxRuleFileBytes)
 	if result.err != nil {
 		t.Fatalf("unexpected error: %v", result.err)
 	}
@@ -181,7 +181,7 @@ func TestExecuteRuleCheck_ScopeFiltering(t *testing.T) {
 		},
 	}
 
-	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef)
+	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef, DefaultMaxRuleFileBytes)
 	if result.err != nil {
 		t.Fatalf("unexpected error: %v", result.err)
 	}
@@ -241,7 +241,7 @@ func TestExecuteRuleCheck_CaseInsensitiveContains(t *testing.T) {
 		},
 	}
 
-	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef)
+	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef, DefaultMaxRuleFileBytes)
 	if result.err != nil {
 		t.Fatalf("unexpected error: %v", result.err)
 	}
@@ -279,7 +279,7 @@ func TestExecuteRuleCheck_CaseSensitiveContains(t *testing.T) {
 		},
 	}
 
-	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef)
+	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef, DefaultMaxRuleFileBytes)
 	if result.err != nil {
 		t.Fatalf("unexpected error: %v", result.err)
 	}
@@ -318,7 +318,7 @@ func TestExecuteRuleCheck_MaxMatchesLimit(t *testing.T) {
 		},
 	}
 
-	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef)
+	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef, DefaultMaxRuleFileBytes)
 	if result.err != nil {
 		t.Fatalf("unexpected error: %v", result.err)
 	}
@@ -353,7 +353,7 @@ func TestExecuteRuleCheck_EmptyManifest(t *testing.T) {
 		},
 	}
 
-	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef)
+	result := executeRuleCheck(context.Background(), workspace, manifest, checkDef, DefaultMaxRuleFileBytes)
 	if result.err != nil {
 		t.Fatalf("unexpected error: %v", result.err)
 	}
@@ -396,7 +396,7 @@ func TestExecuteRuleCheck_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	result := executeRuleCheck(ctx, workspace, manifest, checkDef)
+	result := executeRuleCheck(ctx, workspace, manifest, checkDef, DefaultMaxRuleFileBytes)
 	if result.err == nil {
 		// It's OK if some files were processed before cancellation
 		t.Log("NOTE: rule check completed despite cancelled context (fast execution)")

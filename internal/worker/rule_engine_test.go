@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"governor/internal/checks"
@@ -44,7 +45,7 @@ func runRuleCheck(t *testing.T, checkDef checks.Definition, filename string, con
 	manifest := model.InputManifest{
 		Files: []model.ManifestFile{{Path: filename, Size: int64(len(content))}},
 	}
-	result := executeRuleCheck(context.Background(), dir, manifest, checkDef)
+	result := executeRuleCheck(context.Background(), dir, manifest, checkDef, DefaultMaxRuleFileBytes)
 	if result.err != nil {
 		t.Fatalf("executeRuleCheck error: %v", result.err)
 	}
@@ -507,6 +508,68 @@ func TestBuiltinChecks_AllCompile(t *testing.T) {
 				t.Fatalf("check %q has no detectors", def.ID)
 			}
 		})
+	}
+}
+
+func TestExecuteRuleCheck_RespectsCustomMaxFileBytes(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Repeat("password = 'secret'\n", 100) // ~2000 bytes
+	if err := os.WriteFile(filepath.Join(dir, "config.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := model.InputManifest{
+		RootPath: dir,
+		Files:    []model.ManifestFile{{Path: "config.txt", Size: int64(len(content))}},
+	}
+	checkDef := checks.Definition{
+		ID:     "test_check",
+		Engine: checks.EngineRule,
+		Rule: checks.Rule{
+			Detectors: []checks.RuleDetector{
+				{ID: "d1", Kind: checks.RuleDetectorContains, Pattern: "password"},
+			},
+		},
+	}
+
+	// With limit lower than file size, file should be skipped
+	result := executeRuleCheck(context.Background(), dir, manifest, checkDef, 1000)
+	if len(result.payload.Findings) != 0 {
+		t.Fatalf("expected 0 findings with 1KB limit, got %d", len(result.payload.Findings))
+	}
+
+	// With limit higher than file size, file should be scanned
+	result2 := executeRuleCheck(context.Background(), dir, manifest, checkDef, 5000)
+	if len(result2.payload.Findings) == 0 {
+		t.Fatal("expected findings with 5KB limit")
+	}
+}
+
+func TestExecuteRuleCheck_DefaultLimit(t *testing.T) {
+	dir := t.TempDir()
+	content := "password = 'test'"
+	if err := os.WriteFile(filepath.Join(dir, "small.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := model.InputManifest{
+		RootPath: dir,
+		Files:    []model.ManifestFile{{Path: "small.txt", Size: int64(len(content))}},
+	}
+	checkDef := checks.Definition{
+		ID:     "test_check",
+		Engine: checks.EngineRule,
+		Rule: checks.Rule{
+			Detectors: []checks.RuleDetector{
+				{ID: "d1", Kind: checks.RuleDetectorContains, Pattern: "password"},
+			},
+		},
+	}
+
+	// Default limit should scan small files fine
+	result := executeRuleCheck(context.Background(), dir, manifest, checkDef, DefaultMaxRuleFileBytes)
+	if len(result.payload.Findings) == 0 {
+		t.Fatal("expected findings with default limit on small file")
 	}
 }
 

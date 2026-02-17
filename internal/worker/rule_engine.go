@@ -16,7 +16,8 @@ import (
 const (
 	defaultDetectorMaxMatches = 5
 	defaultRuleConfidence     = 0.7
-	maxRuleFileBytes          = 2 * 1024 * 1024
+	DefaultMaxRuleFileBytes   = 2 * 1024 * 1024
+	MaxAllowedRuleFileBytes   = 20 * 1024 * 1024
 	regexMatchTimeout         = 5 * time.Second
 )
 
@@ -32,7 +33,7 @@ type ruleExecResult struct {
 	err     error
 }
 
-func executeRuleCheck(ctx context.Context, workspace string, manifest model.InputManifest, checkDef checks.Definition) ruleExecResult {
+func executeRuleCheck(ctx context.Context, workspace string, manifest model.InputManifest, checkDef checks.Definition, maxFileBytes int) ruleExecResult {
 	checkDef = checks.NormalizeDefinition(checkDef)
 	compiled, compileErr := compileDetectors(checkDef.Rule.Detectors)
 	if compileErr != nil {
@@ -80,9 +81,9 @@ func executeRuleCheck(ctx context.Context, workspace string, manifest model.Inpu
 			notes = append(notes, fmt.Sprintf("read %s: %v", rel, err))
 			continue
 		}
-		if len(contentBytes) > maxRuleFileBytes {
+		if len(contentBytes) > maxFileBytes {
 			skippedLarge++
-			notes = append(notes, fmt.Sprintf("skipped %s (size=%d exceeds %d)", rel, len(contentBytes), maxRuleFileBytes))
+			notes = append(notes, fmt.Sprintf("skipped %s (size=%d exceeds %d)", rel, len(contentBytes), maxFileBytes))
 			continue
 		}
 
@@ -408,7 +409,7 @@ func ScanFiles(ctx context.Context, files []string, checkDef checks.Definition) 
 		if readErr != nil {
 			continue
 		}
-		if len(contentBytes) > maxRuleFileBytes {
+		if len(contentBytes) > DefaultMaxRuleFileBytes {
 			continue
 		}
 

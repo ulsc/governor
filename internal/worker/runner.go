@@ -22,17 +22,18 @@ import (
 )
 
 type RunOptions struct {
-	AIRuntime    ai.Runtime
-	CodexBin     string
-	OutDir       string
-	MaxParallel  int
-	Timeout      time.Duration
-	RetryCount   int
-	RetryBackoff time.Duration
-	Verbose      bool
-	Sink         progress.Sink
-	Mode         string
-	SandboxMode  string
+	AIRuntime        ai.Runtime
+	CodexBin         string
+	OutDir           string
+	MaxParallel      int
+	Timeout          time.Duration
+	RetryCount       int
+	RetryBackoff     time.Duration
+	Verbose          bool
+	Sink             progress.Sink
+	Mode             string
+	SandboxMode      string
+	MaxRuleFileBytes int
 
 	SandboxDenyHostFallback bool
 	IncludeTestFiles        bool
@@ -285,7 +286,11 @@ func runRuleTrack(
 	logPath string,
 	outputPath string,
 ) model.WorkerResult {
-	execRes := executeRuleCheck(ctx, workspace, manifest, checkDef)
+	maxRuleBytes := opts.MaxRuleFileBytes
+	if maxRuleBytes <= 0 {
+		maxRuleBytes = DefaultMaxRuleFileBytes
+	}
+	execRes := executeRuleCheck(ctx, workspace, manifest, checkDef, maxRuleBytes)
 	logBytes := []byte(strings.TrimSpace(redact.Text(execRes.logText)) + "\n")
 	if strings.TrimSpace(execRes.logText) == "" {
 		logBytes = []byte("[governor] deterministic rule engine produced no log output\n")
