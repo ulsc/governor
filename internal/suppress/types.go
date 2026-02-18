@@ -4,6 +4,7 @@ import "time"
 
 // Rule represents a centralized suppression rule from .governor/suppressions.yaml.
 type Rule struct {
+	ID       string `yaml:"id,omitempty" json:"id,omitempty"`
 	Check    string `yaml:"check,omitempty"`
 	Title    string `yaml:"title,omitempty"`
 	Category string `yaml:"category,omitempty"`
@@ -25,6 +26,15 @@ func (r Rule) IsExpired(now time.Time) bool {
 		return false
 	}
 	return now.After(t)
+}
+
+// HasInvalidExpiry returns true when the expires field is set but not parseable.
+func (r Rule) HasInvalidExpiry() bool {
+	if r.Expires == "" {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", r.Expires)
+	return err != nil
 }
 
 // InlineSuppression represents a governor:suppress annotation found in source.

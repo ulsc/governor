@@ -390,7 +390,7 @@ Common diagnostic labels in worker/preflight errors:
 ## Checks Command
 
 ```bash
-governor checks [<tui|init|add|extract|list|validate|doctor|explain|enable|disable>]
+governor checks [<tui|init|add|extract|list|validate|doctor|explain|enable|disable|lock|update-packs>]
 ```
 
 Default behavior:

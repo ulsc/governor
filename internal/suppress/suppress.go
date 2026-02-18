@@ -1,6 +1,8 @@
 package suppress
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,7 +42,104 @@ func Load(path string) ([]Rule, error) {
 			return nil, fmt.Errorf("suppression rule %d: reason is required", i+1)
 		}
 	}
-	return sf.Suppressions, nil
+	return EnsureRuleIDs(sf.Suppressions), nil
+}
+
+// Save writes suppression rules to disk using the canonical YAML structure.
+func Save(path string, rules []Rule) error {
+	rules = EnsureRuleIDs(rules)
+	sf := suppressionsFile{Suppressions: rules}
+	data, err := yaml.Marshal(sf)
+	if err != nil {
+		return fmt.Errorf("marshal suppressions: %w", err)
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create suppressions dir: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write suppressions: %w", err)
+	}
+	return nil
+}
+
+// EnsureRuleIDs fills missing rule IDs and guarantees uniqueness.
+func EnsureRuleIDs(rules []Rule) []Rule {
+	out := make([]Rule, len(rules))
+	copy(out, rules)
+
+	used := make(map[string]struct{}, len(out))
+	for i := range out {
+		out[i].ID = normalizeRuleID(out[i].ID)
+		if out[i].ID == "" {
+			out[i].ID = generateRuleID(out[i])
+		}
+		base := out[i].ID
+		for n := 2; ; n++ {
+			if _, exists := used[out[i].ID]; !exists {
+				used[out[i].ID] = struct{}{}
+				break
+			}
+			out[i].ID = fmt.Sprintf("%s-%d", base, n)
+		}
+	}
+	return out
+}
+
+type MatchOptions struct {
+	IDPattern string
+	Check     string
+	Title     string
+	Category  string
+	Files     string
+	Severity  string
+}
+
+// RemoveMatching partitions rules into kept and removed groups.
+func RemoveMatching(rules []Rule, opts MatchOptions) (kept []Rule, removed []Rule) {
+	rules = EnsureRuleIDs(rules)
+	kept = make([]Rule, 0, len(rules))
+	removed = make([]Rule, 0)
+	for _, rule := range rules {
+		if RuleMatches(rule, opts) {
+			removed = append(removed, rule)
+			continue
+		}
+		kept = append(kept, rule)
+	}
+	return kept, removed
+}
+
+// RuleMatches returns true if a rule matches all specified options.
+func RuleMatches(rule Rule, opts MatchOptions) bool {
+	if strings.TrimSpace(opts.IDPattern) != "" && !matchGlob(opts.IDPattern, rule.ID) {
+		return false
+	}
+	if strings.TrimSpace(opts.Check) != "" && !matchGlob(opts.Check, rule.Check) {
+		return false
+	}
+	if strings.TrimSpace(opts.Title) != "" && !matchGlob(opts.Title, rule.Title) {
+		return false
+	}
+	if strings.TrimSpace(opts.Category) != "" && !strings.EqualFold(strings.TrimSpace(opts.Category), strings.TrimSpace(rule.Category)) {
+		return false
+	}
+	if strings.TrimSpace(opts.Files) != "" && !matchGlob(opts.Files, rule.Files) {
+		return false
+	}
+	if strings.TrimSpace(opts.Severity) != "" && !strings.EqualFold(strings.TrimSpace(opts.Severity), strings.TrimSpace(rule.Severity)) {
+		return false
+	}
+	if strings.TrimSpace(opts.IDPattern) == "" &&
+		strings.TrimSpace(opts.Check) == "" &&
+		strings.TrimSpace(opts.Title) == "" &&
+		strings.TrimSpace(opts.Category) == "" &&
+		strings.TrimSpace(opts.Files) == "" &&
+		strings.TrimSpace(opts.Severity) == "" {
+		return false
+	}
+	return true
 }
 
 // Apply partitions findings into active and suppressed based on rules and inline annotations.
@@ -212,4 +311,41 @@ func matchDoublestar(pattern, value string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeRuleID(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, ch := range raw {
+		switch {
+		case ch >= 'a' && ch <= 'z':
+			b.WriteRune(ch)
+		case ch >= '0' && ch <= '9':
+			b.WriteRune(ch)
+		case ch == '-' || ch == '_':
+			b.WriteRune(ch)
+		case ch == ' ':
+			b.WriteRune('-')
+		}
+	}
+	id := strings.Trim(b.String(), "-_")
+	return id
+}
+
+func generateRuleID(rule Rule) string {
+	parts := []string{
+		strings.TrimSpace(rule.Check),
+		strings.TrimSpace(rule.Title),
+		strings.TrimSpace(rule.Category),
+		strings.TrimSpace(rule.Files),
+		strings.TrimSpace(rule.Severity),
+		strings.TrimSpace(rule.Reason),
+		strings.TrimSpace(rule.Author),
+		strings.TrimSpace(rule.Expires),
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return "sup-" + hex.EncodeToString(sum[:6])
 }

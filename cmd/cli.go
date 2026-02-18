@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/mattn/go-isatty"
-	"gopkg.in/yaml.v3"
 	"governor/internal/ai"
 	"governor/internal/app"
 	"governor/internal/badge"
@@ -25,6 +23,7 @@ import (
 	"governor/internal/comment"
 	"governor/internal/config"
 	"governor/internal/diff"
+	"governor/internal/doctor"
 	"governor/internal/extractor"
 	"governor/internal/intake"
 	"governor/internal/isolation"
@@ -69,6 +68,8 @@ func Execute(args []string) error {
 		return runInit(args[1:])
 	case "clear":
 		return runClear(args[1:])
+	case "doctor":
+		return runDoctor(args[1:])
 	case "version", "--version", "-v":
 		fmt.Println("governor " + version.Version)
 		update.PrintNotice(<-update.CheckAsync())
@@ -770,6 +771,10 @@ func runChecks(args []string) error {
 		return runChecksInstallPack(args[1:])
 	case "list-packs":
 		return runChecksListPacks(args[1:])
+	case "lock":
+		return runChecksLock(args[1:])
+	case "update-packs":
+		return runChecksUpdatePacks(args[1:])
 	default:
 		return usageError(fmt.Sprintf("unknown checks subcommand %q", args[0]))
 	}
@@ -1301,38 +1306,82 @@ func runChecksUntap(args []string) error {
 }
 
 func runChecksInstallPack(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: governor checks install-pack <pack-name>")
+	fs := flag.NewFlagSet("governor checks install-pack", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	unlock := fs.Bool("unlock", false, "Bypass lockfile resolution and install latest available pack")
+	lockFile := fs.String("lock-file", "", "Path to checks lock file (default ./.governor/checks.lock.yaml)")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	packName := args[0]
+	if len(fs.Args()) != 1 {
+		return errors.New("usage: governor checks install-pack [--unlock] <pack-name>")
+	}
+	packName := strings.TrimSpace(fs.Args()[0])
 
 	cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
 	if err != nil {
 		return err
 	}
-
-	var packDir string
-	for _, t := range cfg.Taps {
-		dir, found := taps.FindPack(t.Path, packName)
-		if found {
-			packDir = dir
-			break
-		}
+	if len(cfg.Taps) == 0 {
+		return errors.New("no taps registered; use 'governor checks tap <source>' first")
 	}
-	if packDir == "" {
+
+	allPacks, err := taps.DiscoverPacks(cfg)
+	if err != nil {
+		return err
+	}
+	candidates := taps.FindPackCandidates(allPacks, packName)
+	if len(candidates) == 0 {
 		return fmt.Errorf("pack %q not found in any registered tap", packName)
 	}
 
-	count, err := taps.CopyPackChecks(packDir, ".governor/checks/")
+	lockPath := strings.TrimSpace(*lockFile)
+	if lockPath == "" {
+		lockPath = taps.DefaultLockPath()
+	}
+	lock, err := taps.LoadLock(lockPath)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Installed pack %s (%d checks)\n", packName, count)
+	var selected taps.LocatedPack
+	if locked, found := taps.FindLockedPack(lock, packName); found && !*unlock {
+		selected, err = taps.ResolveLockedPack(candidates, locked)
+		if err != nil {
+			return fmt.Errorf("locked pack mismatch for %q: %w (run 'governor checks update-packs' or use --unlock)", packName, err)
+		}
+	} else {
+		selected, err = taps.SelectLatestPack(candidates)
+		if err != nil {
+			return err
+		}
+	}
+
+	count, err := taps.CopyPackChecks(selected.Dir, ".governor/checks/")
+	if err != nil {
+		return err
+	}
+
+	taps.UpsertLockedPack(&lock, taps.LockedPackFromLocated(selected, time.Now().UTC()))
+	if err := taps.SaveLock(lockPath, lock); err != nil {
+		return err
+	}
+
+	versionLabel := strings.TrimSpace(selected.Version)
+	if versionLabel == "" {
+		versionLabel = "unversioned"
+	}
+	fmt.Printf("Installed pack %s@%s from %s (%d checks)\n", selected.Name, versionLabel, selected.TapName, count)
+	fmt.Printf("lock file: %s\n", lockPath)
 	return nil
 }
 
 func runChecksListPacks(args []string) error {
+	if len(args) != 0 {
+		return errors.New("checks list-packs does not accept positional args")
+	}
+
 	cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
 	if err != nil {
 		return err
@@ -1354,6 +1403,152 @@ func runChecksListPacks(args []string) error {
 			fmt.Printf("%-20s %-20s %s\n", t.Name, p.Name, p.Description)
 		}
 	}
+	return nil
+}
+
+func runChecksLock(args []string) error {
+	fs := flag.NewFlagSet("governor checks lock", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	lockFile := fs.String("lock-file", "", "Path to checks lock file (default ./.governor/checks.lock.yaml)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("checks lock does not accept positional args")
+	}
+
+	cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
+	if err != nil {
+		return err
+	}
+	if len(cfg.Taps) == 0 {
+		return errors.New("no taps registered; use 'governor checks tap <source>' first")
+	}
+
+	allPacks, err := taps.DiscoverPacks(cfg)
+	if err != nil {
+		return err
+	}
+	byName := make(map[string][]taps.LocatedPack, len(allPacks))
+	for _, pack := range allPacks {
+		key := strings.ToLower(pack.Name)
+		byName[key] = append(byName[key], pack)
+	}
+
+	lock := taps.LockFile{APIVersion: taps.LockAPIVersion}
+	for _, candidates := range byName {
+		best, err := taps.SelectLatestPack(candidates)
+		if err != nil {
+			return err
+		}
+		taps.UpsertLockedPack(&lock, taps.LockedPackFromLocated(best, time.Now().UTC()))
+	}
+
+	lockPath := strings.TrimSpace(*lockFile)
+	if lockPath == "" {
+		lockPath = taps.DefaultLockPath()
+	}
+	if err := taps.SaveLock(lockPath, lock); err != nil {
+		return err
+	}
+
+	fmt.Printf("wrote checks lock: %s (%d packs)\n", lockPath, len(lock.Packs))
+	return nil
+}
+
+func runChecksUpdatePacks(args []string) error {
+	fs := flag.NewFlagSet("governor checks update-packs", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	allowMajor := fs.Bool("major", false, "Allow major-version updates")
+	dryRun := fs.Bool("dry-run", false, "Show updates without modifying the lock file")
+	lockFile := fs.String("lock-file", "", "Path to checks lock file (default ./.governor/checks.lock.yaml)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("checks update-packs does not accept positional args")
+	}
+
+	lockPath := strings.TrimSpace(*lockFile)
+	if lockPath == "" {
+		lockPath = taps.DefaultLockPath()
+	}
+	lock, err := taps.LoadLock(lockPath)
+	if err != nil {
+		return err
+	}
+	if len(lock.Packs) == 0 {
+		fmt.Println("no locked packs to update")
+		return nil
+	}
+
+	cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
+	if err != nil {
+		return err
+	}
+	allPacks, err := taps.DiscoverPacks(cfg)
+	if err != nil {
+		return err
+	}
+	byName := make(map[string][]taps.LocatedPack, len(allPacks))
+	for _, pack := range allPacks {
+		byName[strings.ToLower(pack.Name)] = append(byName[strings.ToLower(pack.Name)], pack)
+	}
+
+	type updateItem struct {
+		old taps.LockedPack
+		new taps.LocatedPack
+	}
+	updates := make([]updateItem, 0)
+
+	for _, locked := range lock.Packs {
+		candidates := byName[strings.ToLower(locked.Name)]
+		if len(candidates) == 0 {
+			fmt.Fprintf(os.Stderr, "warning: locked pack %s no longer exists in any tap\n", locked.Name)
+			continue
+		}
+		latest, err := taps.SelectLatestPack(candidates)
+		if err != nil {
+			return err
+		}
+		versionCmp := taps.CompareVersion(strings.TrimSpace(latest.Version), strings.TrimSpace(locked.Version))
+		digestChanged := strings.TrimSpace(latest.Digest) != strings.TrimSpace(locked.Digest)
+		if versionCmp < 0 {
+			continue
+		}
+		if versionCmp == 0 && !digestChanged {
+			continue
+		}
+		if !*allowMajor && taps.IsMajorUpgrade(strings.TrimSpace(locked.Version), strings.TrimSpace(latest.Version)) {
+			fmt.Printf("skipping major update for %s: %s -> %s (use --major)\n", locked.Name, locked.Version, latest.Version)
+			continue
+		}
+		updates = append(updates, updateItem{old: locked, new: latest})
+	}
+
+	if len(updates) == 0 {
+		fmt.Println("all locked packs are up to date")
+		return nil
+	}
+
+	for _, item := range updates {
+		fmt.Printf("update %s: %s -> %s (%s)\n", item.old.Name, item.old.Version, item.new.Version, item.new.TapName)
+	}
+
+	if *dryRun {
+		fmt.Printf("dry-run: %d update(s) available\n", len(updates))
+		return nil
+	}
+
+	for _, item := range updates {
+		taps.UpsertLockedPack(&lock, taps.LockedPackFromLocated(item.new, time.Now().UTC()))
+	}
+	if err := taps.SaveLock(lockPath, lock); err != nil {
+		return err
+	}
+	fmt.Printf("updated lock file: %s (%d updates)\n", lockPath, len(updates))
 	return nil
 }
 
@@ -2142,6 +2337,45 @@ func clearRuns(runsDir string, keep int) ([]string, error) {
 	return removed, nil
 }
 
+func runDoctor(args []string) error {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	jsonOut := fs.Bool("json", false, "Output doctor report as JSON")
+	strict := fs.Bool("strict", false, "Treat warnings as failures")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("doctor does not accept positional args")
+	}
+
+	report := doctor.BuildReport(context.Background(), doctor.Options{})
+	if *jsonOut {
+		b, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal doctor report: %w", err)
+		}
+		fmt.Println(string(b))
+	} else {
+		fmt.Println("doctor checks:")
+		for _, check := range report.Checks {
+			fmt.Printf("- %-20s %-7s %s\n", check.ID, string(check.Status), check.Message)
+		}
+		fmt.Println("")
+		fmt.Printf("summary: pass=%d warning=%d fail=%d\n", report.Summary.Pass, report.Summary.Warning, report.Summary.Fail)
+	}
+
+	if report.Failed(*strict) {
+		if *strict && report.Summary.Fail == 0 {
+			return errors.New("doctor strict mode failed: warnings found")
+		}
+		return errors.New("doctor failed: one or more checks failed")
+	}
+	return nil
+}
+
 func runCI(args []string) error {
 	fs := flag.NewFlagSet("ci", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
@@ -2367,11 +2601,15 @@ func runCI(args []string) error {
 
 func runFindings(args []string) error {
 	if len(args) == 0 {
-		return usageError("usage: governor findings <suppress|list|expired>")
+		return usageError("usage: governor findings <suppress|unsuppress|prune|list|expired>")
 	}
 	switch args[0] {
 	case "suppress":
 		return runFindingsSuppress(args[1:])
+	case "unsuppress":
+		return runFindingsUnsuppress(args[1:])
+	case "prune":
+		return runFindingsPrune(args[1:])
 	case "list":
 		return runFindingsList(args[1:])
 	case "expired":
@@ -2421,6 +2659,7 @@ func runFindingsSuppress(args []string) error {
 	if loadErr != nil && !os.IsNotExist(loadErr) {
 		return fmt.Errorf("load suppressions: %w", loadErr)
 	}
+	rules = suppress.EnsureRuleIDs(rules)
 
 	// Add new rule.
 	newRule := suppress.Rule{
@@ -2434,46 +2673,124 @@ func runFindingsSuppress(args []string) error {
 		Expires:  strings.TrimSpace(*expires),
 	}
 	rules = append(rules, newRule)
+	rules = suppress.EnsureRuleIDs(rules)
+	added := rules[len(rules)-1]
 
-	// Write back.
-	sf := suppressionsFile{Suppressions: rules}
-	data, marshalErr := marshalSuppressionsYAML(sf)
-	if marshalErr != nil {
-		return marshalErr
+	if err := suppress.Save(path, rules); err != nil {
+		return fmt.Errorf("save suppressions: %w", err)
 	}
 
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create suppressions dir: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("write suppressions: %w", err)
-	}
-
-	fmt.Printf("added suppression to %s\n", path)
+	fmt.Printf("added suppression %s to %s\n", added.ID, path)
 	return nil
 }
 
-type suppressionsFile struct {
-	Suppressions []suppress.Rule `yaml:"suppressions"`
-}
+func runFindingsUnsuppress(args []string) error {
+	fs := flag.NewFlagSet("findings unsuppress", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
 
-func marshalSuppressionsYAML(sf suppressionsFile) ([]byte, error) {
-	b, err := marshalYAML(sf)
+	check := fs.String("check", "", "Check ID glob to match")
+	title := fs.String("title", "", "Title glob to match")
+	category := fs.String("category", "", "Category to match")
+	files := fs.String("files", "", "File glob to match")
+	severity := fs.String("severity", "", "Severity to match")
+	suppressionsPath := fs.String("suppressions", "", "Path to suppressions file (default ./.governor/suppressions.yaml)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	idPattern := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if idPattern == "" && *check == "" && *title == "" && *category == "" && *files == "" && *severity == "" {
+		return errors.New("at least one matching criterion is required (id/pattern, --check, --title, --category, --files, or --severity)")
+	}
+
+	path := strings.TrimSpace(*suppressionsPath)
+	if path == "" {
+		path = suppress.DefaultPath(".")
+	}
+
+	rules, err := suppress.Load(path)
 	if err != nil {
-		return nil, fmt.Errorf("marshal suppressions: %w", err)
+		return fmt.Errorf("load suppressions: %w", err)
 	}
-	return b, nil
+	kept, removed := suppress.RemoveMatching(rules, suppress.MatchOptions{
+		IDPattern: idPattern,
+		Check:     strings.TrimSpace(*check),
+		Title:     strings.TrimSpace(*title),
+		Category:  strings.TrimSpace(*category),
+		Files:     strings.TrimSpace(*files),
+		Severity:  strings.TrimSpace(*severity),
+	})
+	if len(removed) == 0 {
+		fmt.Println("no matching suppressions found")
+		return nil
+	}
+	if err := suppress.Save(path, kept); err != nil {
+		return fmt.Errorf("save suppressions: %w", err)
+	}
+	fmt.Printf("removed %d suppression(s)\n", len(removed))
+	for _, rule := range removed {
+		fmt.Printf("- %s\n", rule.ID)
+	}
+	return nil
 }
 
-func marshalYAML(v interface{}) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
+func runFindingsPrune(args []string) error {
+	fs := flag.NewFlagSet("findings prune", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	expiredOnly := fs.Bool("expired-only", false, "Only prune expired suppressions")
+	yes := fs.Bool("yes", false, "Apply prune without confirmation prompt")
+	suppressionsPath := fs.String("suppressions", "", "Path to suppressions file (default ./.governor/suppressions.yaml)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	return buf.Bytes(), nil
+	if len(fs.Args()) != 0 {
+		return errors.New("findings prune does not accept positional args")
+	}
+
+	path := strings.TrimSpace(*suppressionsPath)
+	if path == "" {
+		path = suppress.DefaultPath(".")
+	}
+
+	rules, err := suppress.Load(path)
+	if err != nil {
+		return fmt.Errorf("load suppressions: %w", err)
+	}
+
+	now := time.Now().UTC()
+	kept := make([]suppress.Rule, 0, len(rules))
+	removed := make([]suppress.Rule, 0)
+	for _, rule := range suppress.EnsureRuleIDs(rules) {
+		if rule.IsExpired(now) {
+			removed = append(removed, rule)
+			continue
+		}
+		if !*expiredOnly && rule.HasInvalidExpiry() {
+			removed = append(removed, rule)
+			continue
+		}
+		kept = append(kept, rule)
+	}
+	if len(removed) == 0 {
+		fmt.Println("no suppressions to prune")
+		return nil
+	}
+
+	if !*yes {
+		fmt.Printf("would prune %d suppression(s). Re-run with --yes to apply.\n", len(removed))
+		for _, rule := range removed {
+			fmt.Printf("- %s\n", rule.ID)
+		}
+		return errors.New("prune preview only")
+	}
+
+	if err := suppress.Save(path, kept); err != nil {
+		return fmt.Errorf("save suppressions: %w", err)
+	}
+	fmt.Printf("pruned %d suppression(s)\n", len(removed))
+	return nil
 }
 
 func runFindingsList(args []string) error {
@@ -2494,6 +2811,7 @@ func runFindingsList(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load suppressions: %w", err)
 	}
+	rules = suppress.EnsureRuleIDs(rules)
 	if len(rules) == 0 {
 		fmt.Println("no active suppressions")
 		return nil
@@ -2501,7 +2819,7 @@ func runFindingsList(args []string) error {
 
 	fmt.Printf("suppressions from %s:\n\n", path)
 	for i, r := range rules {
-		fmt.Printf("[%d] ", i+1)
+		fmt.Printf("[%d] id=%s ", i+1, r.ID)
 		if r.Check != "" {
 			fmt.Printf("check=%s ", r.Check)
 		}
@@ -2547,6 +2865,7 @@ func runFindingsExpired(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load suppressions: %w", err)
 	}
+	rules = suppress.EnsureRuleIDs(rules)
 
 	now := time.Now().UTC()
 	expired := make([]suppress.Rule, 0)
@@ -2563,8 +2882,9 @@ func runFindingsExpired(args []string) error {
 
 	fmt.Printf("%d expired suppression(s):\n\n", len(expired))
 	for _, r := range expired {
+		fmt.Printf("- id=%s", r.ID)
 		if r.Title != "" {
-			fmt.Printf("- title=%q", r.Title)
+			fmt.Printf(" title=%q", r.Title)
 		}
 		if r.Check != "" {
 			fmt.Printf(" check=%s", r.Check)
@@ -2581,14 +2901,17 @@ func printUsage() {
 	fmt.Println("  governor version")
 	fmt.Println("  governor init [flags]")
 	fmt.Println("  governor audit <path-or-zip> [flags]")
+	fmt.Println("  governor doctor [flags]")
 	fmt.Println("  governor ci [<path>] [flags]")
-	fmt.Println("  governor findings <suppress|list|expired> [flags]")
+	fmt.Println("  governor findings <suppress|unsuppress|prune|list|expired> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
-	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable>] [flags]")
+	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable|lock|update-packs>] [flags]")
 	fmt.Println("  governor checks tap <source>           Register a check pack source")
 	fmt.Println("  governor checks untap <name>           Remove a registered source")
 	fmt.Println("  governor checks install-pack <pack>    Install a check pack")
 	fmt.Println("  governor checks list-packs             List available check packs")
+	fmt.Println("  governor checks lock                   Write checks lock file")
+	fmt.Println("  governor checks update-packs           Update locked pack versions")
 	fmt.Println("  governor hooks <install|remove|status>")
 	fmt.Println("  governor diff <old.json> <new.json> [flags]")
 	fmt.Println("  governor scan <file...> [flags]")
@@ -2600,6 +2923,10 @@ func printUsage() {
 	fmt.Println("")
 	fmt.Println("Flags (clear):")
 	fmt.Println("  --without-last [N]  Preserve the N most recent runs (default 1 if N omitted)")
+	fmt.Println("")
+	fmt.Println("Flags (doctor):")
+	fmt.Println("  --json              Output doctor report as JSON")
+	fmt.Println("  --strict            Treat warnings as failures")
 	fmt.Println("")
 	fmt.Println("Flags (audit):")
 	fmt.Println("  --out <dir>         Output directory (default ./.governor/runs/<timestamp>)")
@@ -2652,6 +2979,18 @@ func printUsage() {
 	fmt.Println("  --severity <sev>    Severity to suppress")
 	fmt.Println("  --author <email>    Author of suppression")
 	fmt.Println("  --expires <date>    Expiration date (YYYY-MM-DD)")
+	fmt.Println("")
+	fmt.Println("Flags (findings unsuppress):")
+	fmt.Println("  <id|pattern>        Suppression ID or glob pattern (positional)")
+	fmt.Println("  --check <glob>      Match by check ID glob")
+	fmt.Println("  --title <glob>      Match by title glob")
+	fmt.Println("  --category <cat>    Match by category")
+	fmt.Println("  --files <glob>      Match by file glob")
+	fmt.Println("  --severity <sev>    Match by severity")
+	fmt.Println("")
+	fmt.Println("Flags (findings prune):")
+	fmt.Println("  --expired-only      Prune only expired suppressions")
+	fmt.Println("  --yes               Apply prune (without this flag, prune is preview-only)")
 	fmt.Println("")
 	fmt.Println("Flags (isolate audit):")
 	fmt.Println("  --out <dir>         Output directory for artifacts (default ./.governor/runs/<timestamp>)")

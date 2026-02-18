@@ -341,6 +341,47 @@ func TestLoad_MissingReasonReturnsError(t *testing.T) {
 	}
 }
 
+func TestEnsureRuleIDs_FillsAndUniquifies(t *testing.T) {
+	rules := []Rule{
+		{Check: "check-a", Reason: "one"},
+		{Check: "check-a", Reason: "one"},
+		{ID: "custom id", Check: "check-b", Reason: "two"},
+	}
+	withIDs := EnsureRuleIDs(rules)
+	if withIDs[0].ID == "" || withIDs[1].ID == "" || withIDs[2].ID == "" {
+		t.Fatal("expected all rules to have IDs")
+	}
+	if withIDs[0].ID == withIDs[1].ID {
+		t.Fatal("expected duplicate rule IDs to be disambiguated")
+	}
+	if withIDs[2].ID != "custom-id" {
+		t.Fatalf("expected normalized custom id, got %q", withIDs[2].ID)
+	}
+}
+
+func TestRemoveMatching_ByIDPattern(t *testing.T) {
+	rules := EnsureRuleIDs([]Rule{
+		{ID: "sup-auth", Check: "auth", Reason: "one"},
+		{ID: "sup-secrets", Check: "secrets", Reason: "two"},
+	})
+	kept, removed := RemoveMatching(rules, MatchOptions{IDPattern: "sup-auth"})
+	if len(removed) != 1 || removed[0].ID != "sup-auth" {
+		t.Fatalf("unexpected removed rules: %+v", removed)
+	}
+	if len(kept) != 1 || kept[0].ID != "sup-secrets" {
+		t.Fatalf("unexpected kept rules: %+v", kept)
+	}
+}
+
+func TestRuleHasInvalidExpiry(t *testing.T) {
+	if !(Rule{Expires: "invalid-date"}).HasInvalidExpiry() {
+		t.Fatal("expected invalid expiry to be detected")
+	}
+	if (Rule{Expires: "2099-01-01"}).HasInvalidExpiry() {
+		t.Fatal("did not expect valid date to be marked invalid")
+	}
+}
+
 func TestLoad_AllReasonsPresent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "suppressions.yaml")
