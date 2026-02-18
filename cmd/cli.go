@@ -28,7 +28,9 @@ import (
 	"governor/internal/intake"
 	"governor/internal/isolation"
 	"governor/internal/model"
+	"governor/internal/policy"
 	"governor/internal/progress"
+	reportpkg "governor/internal/report"
 	"governor/internal/safefile"
 	"governor/internal/scan"
 	"governor/internal/suppress"
@@ -64,6 +66,8 @@ func Execute(args []string) error {
 		return runScan(args[1:])
 	case "badge":
 		return runBadge(args[1:])
+	case "policy":
+		return runPolicy(args[1:])
 	case "init":
 		return runInit(args[1:])
 	case "clear":
@@ -126,6 +130,8 @@ func runAudit(args []string) error {
 	suppressionsPath := fs.String("suppressions", "", "Path to suppressions YAML file (default ./.governor/suppressions.yaml if present)")
 	showSuppressed := fs.Bool("show-suppressed", false, "Include suppressed findings in reports")
 	quick := fs.Bool("quick", false, "Run only rule-engine checks (no AI, no network)")
+	policyPath := fs.String("policy", "", "Path to policy file (default ./.governor/policy.yaml if present)")
+	requirePolicy := fs.Bool("require-policy", false, "Fail if no policy file is found")
 	changedOnly := fs.Bool("changed-only", false, "Scan only files with uncommitted changes (vs HEAD)")
 	changedSince := fs.String("changed-since", "", "Scan only files changed since a git ref")
 	staged := fs.Bool("staged", false, "Scan only staged files (for pre-commit use)")
@@ -252,6 +258,11 @@ func runAudit(args []string) error {
 		sandboxValue = ""
 	}
 
+	resolvedPolicyPath, loadedPolicy, hasPolicy, err := resolvePolicyInput(*policyPath, *requirePolicy)
+	if err != nil {
+		return err
+	}
+
 	updateCh := update.CheckAsync()
 
 	selOpts := checks.AuditSelectionOptions{
@@ -367,8 +378,27 @@ func runAudit(args []string) error {
 		if result.err != nil {
 			return result.err
 		}
+		if hasPolicy {
+			var diffReport *diff.DiffReport
+			if result.paths.DiffPath != "" {
+				diffReport, err = loadDiffReport(result.paths.DiffPath)
+				if err != nil {
+					return err
+				}
+			}
+			decision := policy.Evaluate(resolvedPolicyPath, loadedPolicy, result.report, diffReport)
+			result.report.PolicyDecision = &decision
+			result.report.RunMetadata.PolicyPath = resolvedPolicyPath
+			result.report.RunMetadata.PolicyVersion = loadedPolicy.APIVersion
+			if err := persistAuditArtifacts(result.paths, result.report); err != nil {
+				return err
+			}
+		}
 		printAuditSummary(result.report, result.paths)
 		update.PrintNotice(<-updateCh)
+		if err := checkPolicyDecision(result.report.PolicyDecision); err != nil {
+			return err
+		}
 		return checkFailOn(*failOn, result.report)
 	}
 
@@ -377,9 +407,27 @@ func runAudit(args []string) error {
 	if err != nil {
 		return err
 	}
+	if hasPolicy {
+		var diffReport *diff.DiffReport
+		if paths.DiffPath != "" {
+			diffReport, err = loadDiffReport(paths.DiffPath)
+			if err != nil {
+				return err
+			}
+		}
+		decision := policy.Evaluate(resolvedPolicyPath, loadedPolicy, report, diffReport)
+		report.PolicyDecision = &decision
+		report.RunMetadata.PolicyPath = resolvedPolicyPath
+		report.RunMetadata.PolicyVersion = loadedPolicy.APIVersion
+		if err := persistAuditArtifacts(paths, report); err != nil {
+			return err
+		}
+	}
 	printAuditSummary(report, paths)
 	update.PrintNotice(<-updateCh)
-
+	if err := checkPolicyDecision(report.PolicyDecision); err != nil {
+		return err
+	}
 	return checkFailOn(*failOn, report)
 }
 
@@ -2376,6 +2424,145 @@ func runDoctor(args []string) error {
 	return nil
 }
 
+func runPolicy(args []string) error {
+	if len(args) == 0 {
+		return usageError("usage: governor policy <validate|explain> [flags]")
+	}
+	switch args[0] {
+	case "validate":
+		return runPolicyValidate(args[1:])
+	case "explain":
+		return runPolicyExplain(args[1:])
+	default:
+		return usageError(fmt.Sprintf("unknown policy subcommand %q", args[0]))
+	}
+}
+
+func runPolicyValidate(args []string) error {
+	fs := flag.NewFlagSet("policy validate", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	file := fs.String("file", policy.DefaultPath("."), "Path to policy file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("policy validate does not accept positional args")
+	}
+	p, err := policy.Load(*file)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("policy valid: %s (%s)\n", *file, p.APIVersion)
+	return nil
+}
+
+func runPolicyExplain(args []string) error {
+	fs := flag.NewFlagSet("policy explain", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	file := fs.String("file", policy.DefaultPath("."), "Path to policy file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("policy explain does not accept positional args")
+	}
+
+	p, err := policy.Load(*file)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("policy: %s\n", *file)
+	fmt.Printf("api_version: %s\n", p.APIVersion)
+	fmt.Printf("defaults:\n")
+	fmt.Printf("  fail_on_severity: %s\n", fallback(p.Defaults.FailOnSeverity, "none"))
+	if p.Defaults.MaxSuppressionRatio != nil {
+		fmt.Printf("  max_suppression_ratio: %.2f\n", *p.Defaults.MaxSuppressionRatio)
+	}
+	if p.Defaults.MaxNewFindings != nil {
+		fmt.Printf("  max_new_findings: %d\n", *p.Defaults.MaxNewFindings)
+	}
+	fmt.Printf("  require_checks: %s\n", strings.Join(p.Defaults.RequireChecks, ", "))
+	fmt.Printf("  forbid_checks: %s\n", strings.Join(p.Defaults.ForbidChecks, ", "))
+	fmt.Printf("rules: %d\n", len(p.Rules))
+	fmt.Printf("waivers: %d\n", len(p.Waivers))
+	return nil
+}
+
+func resolvePolicyInput(rawPath string, require bool) (string, policy.Policy, bool, error) {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		defaultPath := policy.DefaultPath(".")
+		if _, err := os.Stat(defaultPath); err == nil {
+			path = defaultPath
+		} else if require {
+			return "", policy.Policy{}, false, fmt.Errorf("policy file is required but not found at %s", defaultPath)
+		} else {
+			return "", policy.Policy{}, false, nil
+		}
+	}
+	p, err := policy.Load(path)
+	if err != nil {
+		return "", policy.Policy{}, false, err
+	}
+	return path, p, true, nil
+}
+
+func loadDiffReport(path string) (*diff.DiffReport, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read diff report: %w", err)
+	}
+	var dr diff.DiffReport
+	if err := json.Unmarshal(raw, &dr); err != nil {
+		return nil, fmt.Errorf("parse diff report: %w", err)
+	}
+	return &dr, nil
+}
+
+func persistAuditArtifacts(paths app.ArtifactPaths, report model.AuditReport) error {
+	if err := reportpkg.WriteJSON(paths.JSONPath, report); err != nil {
+		return err
+	}
+	if err := reportpkg.WriteMarkdown(paths.MarkdownPath, report); err != nil {
+		return err
+	}
+	if err := reportpkg.WriteHTML(paths.HTMLPath, report); err != nil {
+		return err
+	}
+	if strings.TrimSpace(paths.SARIFPath) != "" {
+		if err := reportpkg.WriteSARIF(paths.SARIFPath, report); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkPolicyDecision(decision *model.PolicyDecision) error {
+	if decision == nil || decision.Passed {
+		return nil
+	}
+	unwaived := 0
+	for _, violation := range decision.Violations {
+		if !violation.Waived {
+			unwaived++
+		}
+	}
+	if unwaived == 0 {
+		return nil
+	}
+	return fmt.Errorf("policy check failed: %d unwaived violation(s)", unwaived)
+}
+
+func fallback(value string, defaultValue string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return defaultValue
+	}
+	return value
+}
+
 func runCI(args []string) error {
 	fs := flag.NewFlagSet("ci", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
@@ -2409,6 +2596,8 @@ func runCI(args []string) error {
 	showSuppressed := fs.Bool("show-suppressed", false, "Include suppressed findings in reports")
 	includeTestFiles := fs.Bool("include-test-files", false, "Include test files in security scanning")
 	quick := fs.Bool("quick", false, "Run only rule-engine checks (no AI, no network)")
+	policyPath := fs.String("policy", "", "Path to policy file (default ./.governor/policy.yaml if present)")
+	requirePolicy := fs.Bool("require-policy", false, "Fail if no policy file is found")
 	maxRuleFileBytes := fs.Int("max-rule-file-bytes", 0, "Max file size for rule-engine scanning (default 2MB, max 20MB)")
 	maxSuppressionRatio := fs.Float64("max-suppression-ratio", 1.0, "Fail if suppression ratio exceeds threshold (0.0-1.0, default 1.0=disabled)")
 
@@ -2516,6 +2705,11 @@ func runCI(args []string) error {
 		baselinePath = "" // no baseline available
 	}
 
+	resolvedPolicyPath, loadedPolicy, hasPolicy, err := resolvePolicyInput(*policyPath, *requirePolicy)
+	if err != nil {
+		return err
+	}
+
 	auditOpts := app.AuditOptions{
 		InputPath:     positionalInput,
 		OutDir:        *out,
@@ -2548,6 +2742,22 @@ func runCI(args []string) error {
 	report, paths, err := app.RunAudit(context.Background(), auditOpts)
 	if err != nil {
 		os.Exit(2)
+	}
+	if hasPolicy {
+		var diffReport *diff.DiffReport
+		if paths.DiffPath != "" {
+			diffReport, err = loadDiffReport(paths.DiffPath)
+			if err != nil {
+				return err
+			}
+		}
+		decision := policy.Evaluate(resolvedPolicyPath, loadedPolicy, report, diffReport)
+		report.PolicyDecision = &decision
+		report.RunMetadata.PolicyPath = resolvedPolicyPath
+		report.RunMetadata.PolicyVersion = loadedPolicy.APIVersion
+		if err := persistAuditArtifacts(paths, report); err != nil {
+			return err
+		}
 	}
 	printAuditSummary(report, paths)
 
@@ -2594,6 +2804,10 @@ func runCI(args []string) error {
 	}
 	if ratioErr := checkSuppressionRatioCI(*maxSuppressionRatio, report); ratioErr != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", ratioErr)
+		os.Exit(1)
+	}
+	if policyErr := checkPolicyDecision(report.PolicyDecision); policyErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", policyErr)
 		os.Exit(1)
 	}
 	return nil
@@ -2902,6 +3116,7 @@ func printUsage() {
 	fmt.Println("  governor init [flags]")
 	fmt.Println("  governor audit <path-or-zip> [flags]")
 	fmt.Println("  governor doctor [flags]")
+	fmt.Println("  governor policy <validate|explain> [flags]")
 	fmt.Println("  governor ci [<path>] [flags]")
 	fmt.Println("  governor findings <suppress|unsuppress|prune|list|expired> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
@@ -2958,6 +3173,8 @@ func printUsage() {
 	fmt.Println("  --include-test-files  Include test files in security scanning (excluded by default)")
 	fmt.Println("  --no-tui            Disable interactive terminal UI")
 	fmt.Println("  --quick             Run only rule-engine checks (no AI, no network)")
+	fmt.Println("  --policy <path>     Apply policy file (default ./.governor/policy.yaml if present)")
+	fmt.Println("  --require-policy    Fail if no policy file is found")
 	fmt.Println("  --changed-only      Scan only files with uncommitted changes (vs HEAD)")
 	fmt.Println("  --changed-since <ref>  Scan only files changed since a git ref")
 	fmt.Println("  --staged            Scan only staged files (for pre-commit use)")
@@ -2968,7 +3185,12 @@ func printUsage() {
 	fmt.Println("  --comment-file <path>  Write PR comment markdown to file")
 	fmt.Println("  --update-baseline   Write findings as .governor/baseline.json after audit")
 	fmt.Println("  --baseline-file <path>  Baseline file path (default .governor/baseline.json)")
+	fmt.Println("  --policy <path>     Apply policy file (default ./.governor/policy.yaml if present)")
+	fmt.Println("  --require-policy    Fail if no policy file is found")
 	fmt.Println("  (also accepts most audit flags: --workers, --ai-*, --checks-dir, etc.)")
+	fmt.Println("")
+	fmt.Println("Flags (policy):")
+	fmt.Println("  --file <path>       Policy file path (default ./.governor/policy.yaml)")
 	fmt.Println("")
 	fmt.Println("Flags (findings suppress):")
 	fmt.Println("  <title-pattern>     Title glob pattern (positional)")

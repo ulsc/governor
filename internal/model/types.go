@@ -52,16 +52,16 @@ type ManifestFile struct {
 }
 
 type InputManifest struct {
-	RootPath        string         `json:"root_path"`
-	InputPath       string         `json:"input_path"`
-	InputType       string         `json:"input_type"`
-	IncludedFiles   int            `json:"included_files"`
-	IncludedBytes   int64          `json:"included_bytes"`
-	SkippedFiles             int            `json:"skipped_files"`
-	SecurityRelevantSkipped  int            `json:"security_relevant_skipped,omitempty"`
-	SkippedByReason          map[string]int `json:"skipped_by_reason"`
-	Files           []ManifestFile `json:"files"`
-	GeneratedAt     time.Time      `json:"generated_at"`
+	RootPath                string         `json:"root_path"`
+	InputPath               string         `json:"input_path"`
+	InputType               string         `json:"input_type"`
+	IncludedFiles           int            `json:"included_files"`
+	IncludedBytes           int64          `json:"included_bytes"`
+	SkippedFiles            int            `json:"skipped_files"`
+	SecurityRelevantSkipped int            `json:"security_relevant_skipped,omitempty"`
+	SkippedByReason         map[string]int `json:"skipped_by_reason"`
+	Files                   []ManifestFile `json:"files"`
+	GeneratedAt             time.Time      `json:"generated_at"`
 }
 
 type RunMetadata struct {
@@ -90,6 +90,8 @@ type RunMetadata struct {
 	RuleChecks     int       `json:"rule_checks,omitempty"`
 	CheckIDs       []string  `json:"check_ids,omitempty"`
 	ScanMode       string    `json:"scan_mode,omitempty"`
+	PolicyPath     string    `json:"policy_path,omitempty"`
+	PolicyVersion  string    `json:"policy_version,omitempty"`
 }
 
 type InputSummary struct {
@@ -103,13 +105,42 @@ type InputSummary struct {
 }
 
 type AuditReport struct {
-	RunMetadata        RunMetadata    `json:"run_metadata"`
-	InputSummary       InputSummary   `json:"input_summary"`
-	Findings           []Finding      `json:"findings"`
-	SuppressedFindings []Finding      `json:"suppressed_findings,omitempty"`
-	SuppressedCount    int            `json:"suppressed_count,omitempty"`
-	CountsBySeverity   map[string]int `json:"counts_by_severity"`
-	CountsByCategory   map[string]int `json:"counts_by_category"`
-	WorkerSummaries    []WorkerResult `json:"worker_summaries"`
-	Errors             []string       `json:"errors,omitempty"`
+	RunMetadata        RunMetadata     `json:"run_metadata"`
+	InputSummary       InputSummary    `json:"input_summary"`
+	Findings           []Finding       `json:"findings"`
+	SuppressedFindings []Finding       `json:"suppressed_findings,omitempty"`
+	SuppressedCount    int             `json:"suppressed_count,omitempty"`
+	CountsBySeverity   map[string]int  `json:"counts_by_severity"`
+	CountsByCategory   map[string]int  `json:"counts_by_category"`
+	WorkerSummaries    []WorkerResult  `json:"worker_summaries"`
+	Errors             []string        `json:"errors,omitempty"`
+	PolicyDecision     *PolicyDecision `json:"policy_decision,omitempty"`
+}
+
+type PolicyGate struct {
+	FailOnSeverity      string   `json:"fail_on_severity,omitempty"`
+	MaxSuppressionRatio float64  `json:"max_suppression_ratio,omitempty"`
+	MaxNewFindings      int      `json:"max_new_findings,omitempty"`
+	RequireChecks       []string `json:"require_checks,omitempty"`
+	ForbidChecks        []string `json:"forbid_checks,omitempty"`
+}
+
+type PolicyViolation struct {
+	Code     string   `json:"code"`
+	Message  string   `json:"message"`
+	Severity string   `json:"severity,omitempty"`
+	Category string   `json:"category,omitempty"`
+	CheckID  string   `json:"check_id,omitempty"`
+	FileRefs []string `json:"file_refs,omitempty"`
+	Waived   bool     `json:"waived,omitempty"`
+	WaiverID string   `json:"waiver_id,omitempty"`
+}
+
+type PolicyDecision struct {
+	Path       string            `json:"path,omitempty"`
+	APIVersion string            `json:"api_version,omitempty"`
+	Passed     bool              `json:"passed"`
+	Effective  PolicyGate        `json:"effective"`
+	Violations []PolicyViolation `json:"violations,omitempty"`
+	Warnings   []string          `json:"warnings,omitempty"`
 }

@@ -446,6 +446,12 @@ func RenderHTML(report model.AuditReport) string {
 			b.WriteString(fmt.Sprintf("        <li><strong>Check IDs:</strong> <code>%s</code></li>\n", htmlInline(strings.Join(report.RunMetadata.CheckIDs, ", "))))
 		}
 	}
+	if strings.TrimSpace(report.RunMetadata.PolicyPath) != "" {
+		b.WriteString(fmt.Sprintf("        <li><strong>Policy path:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.PolicyPath)))
+	}
+	if strings.TrimSpace(report.RunMetadata.PolicyVersion) != "" {
+		b.WriteString(fmt.Sprintf("        <li><strong>Policy version:</strong> <code>%s</code></li>\n", htmlInline(report.RunMetadata.PolicyVersion)))
+	}
 	b.WriteString("      </ul>\n")
 	b.WriteString("      <div class=\"summary-grid\">\n")
 	b.WriteString(fmt.Sprintf("        <div class=\"stat-card\"><p class=\"label\">Total findings</p><p class=\"value\">%d</p></div>\n", len(report.Findings)))
@@ -500,6 +506,38 @@ func RenderHTML(report model.AuditReport) string {
 			b.WriteString(fmt.Sprintf("        <li>%s</li>\n", htmlInline(e)))
 		}
 		b.WriteString("      </ul>\n")
+		b.WriteString("    </section>\n")
+	}
+
+	if report.PolicyDecision != nil {
+		b.WriteString("    <section>\n")
+		b.WriteString("      <h2>Policy Decision</h2>\n")
+		policyState := "pass"
+		if !report.PolicyDecision.Passed {
+			policyState = "fail"
+		}
+		b.WriteString(fmt.Sprintf("      <p><strong>Status:</strong> <code>%s</code></p>\n", htmlInline(policyState)))
+		if strings.TrimSpace(report.PolicyDecision.Path) != "" {
+			b.WriteString(fmt.Sprintf("      <p><strong>Policy path:</strong> <code>%s</code></p>\n", htmlInline(report.PolicyDecision.Path)))
+		}
+		if strings.TrimSpace(report.PolicyDecision.APIVersion) != "" {
+			b.WriteString(fmt.Sprintf("      <p><strong>Policy version:</strong> <code>%s</code></p>\n", htmlInline(report.PolicyDecision.APIVersion)))
+		}
+		if len(report.PolicyDecision.Violations) > 0 {
+			b.WriteString("      <ul class=\"warnings\">\n")
+			for _, violation := range report.PolicyDecision.Violations {
+				status := ""
+				if violation.Waived {
+					status = " (waived"
+					if strings.TrimSpace(violation.WaiverID) != "" {
+						status += ": " + violation.WaiverID
+					}
+					status += ")"
+				}
+				b.WriteString(fmt.Sprintf("        <li><strong>%s</strong>: %s%s</li>\n", htmlInline(violation.Code), htmlInline(violation.Message), htmlInline(status)))
+			}
+			b.WriteString("      </ul>\n")
+		}
 		b.WriteString("    </section>\n")
 	}
 
@@ -684,6 +722,12 @@ func RenderMarkdown(report model.AuditReport) string {
 			b.WriteString(fmt.Sprintf("- Check IDs: `%s`\n", strings.Join(report.RunMetadata.CheckIDs, ", ")))
 		}
 	}
+	if strings.TrimSpace(report.RunMetadata.PolicyPath) != "" {
+		b.WriteString(fmt.Sprintf("- Policy path: `%s`\n", sanitizeInline(report.RunMetadata.PolicyPath)))
+	}
+	if strings.TrimSpace(report.RunMetadata.PolicyVersion) != "" {
+		b.WriteString(fmt.Sprintf("- Policy version: `%s`\n", sanitizeInline(report.RunMetadata.PolicyVersion)))
+	}
 	b.WriteString(fmt.Sprintf("- Total findings: **%d**\n", len(report.Findings)))
 	if report.SuppressedCount > 0 {
 		b.WriteString(fmt.Sprintf("- Suppressed findings: %d\n", report.SuppressedCount))
@@ -711,6 +755,36 @@ func RenderMarkdown(report model.AuditReport) string {
 		b.WriteString("## Warnings\n\n")
 		for _, e := range report.Errors {
 			b.WriteString("- " + sanitizeInline(e) + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if report.PolicyDecision != nil {
+		b.WriteString("## Policy Decision\n\n")
+		if report.PolicyDecision.Passed {
+			b.WriteString("- Status: **pass**\n")
+		} else {
+			b.WriteString("- Status: **fail**\n")
+		}
+		if strings.TrimSpace(report.PolicyDecision.Path) != "" {
+			b.WriteString(fmt.Sprintf("- Policy path: `%s`\n", sanitizeInline(report.PolicyDecision.Path)))
+		}
+		if strings.TrimSpace(report.PolicyDecision.APIVersion) != "" {
+			b.WriteString(fmt.Sprintf("- Policy version: `%s`\n", sanitizeInline(report.PolicyDecision.APIVersion)))
+		}
+		if len(report.PolicyDecision.Violations) > 0 {
+			b.WriteString("- Violations:\n")
+			for _, violation := range report.PolicyDecision.Violations {
+				line := fmt.Sprintf("  - `%s`: %s", sanitizeInline(violation.Code), sanitizeInline(violation.Message))
+				if violation.Waived {
+					line += " (waived"
+					if strings.TrimSpace(violation.WaiverID) != "" {
+						line += ": " + sanitizeInline(violation.WaiverID)
+					}
+					line += ")"
+				}
+				b.WriteString(line + "\n")
+			}
 		}
 		b.WriteString("\n")
 	}
@@ -800,6 +874,27 @@ func redactReport(in model.AuditReport) model.AuditReport {
 			workers = append(workers, w)
 		}
 		in.WorkerSummaries = workers
+	}
+	if in.PolicyDecision != nil {
+		pd := *in.PolicyDecision
+		pd.Path = redact.Text(pd.Path)
+		pd.Warnings = redact.Strings(pd.Warnings)
+		if len(pd.Violations) > 0 {
+			violations := make([]model.PolicyViolation, 0, len(pd.Violations))
+			for _, v := range pd.Violations {
+				v.Message = redact.Text(v.Message)
+				if len(v.FileRefs) > 0 {
+					refs := make([]string, 0, len(v.FileRefs))
+					for _, ref := range v.FileRefs {
+						refs = append(refs, redact.Text(ref))
+					}
+					v.FileRefs = refs
+				}
+				violations = append(violations, v)
+			}
+			pd.Violations = violations
+		}
+		in.PolicyDecision = &pd
 	}
 	return in
 }
