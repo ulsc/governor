@@ -27,6 +27,7 @@ import (
 	"governor/internal/extractor"
 	"governor/internal/intake"
 	"governor/internal/isolation"
+	"governor/internal/matrix"
 	"governor/internal/model"
 	"governor/internal/policy"
 	"governor/internal/progress"
@@ -67,6 +68,8 @@ func Execute(args []string) error {
 		return runScan(args[1:])
 	case "badge":
 		return runBadge(args[1:])
+	case "matrix":
+		return runMatrix(args[1:])
 	case "policy":
 		return runPolicy(args[1:])
 	case "init":
@@ -779,6 +782,23 @@ func countAtOrAbove(findings []model.Finding, thresholdWeight int) int {
 		}
 	}
 	return n
+}
+
+func countAtOrAboveCounts(counts map[string]int, thresholdWeight int) int {
+	if len(counts) == 0 {
+		return 0
+	}
+	total := 0
+	for severity, count := range counts {
+		weight, ok := severityWeightMap[strings.ToLower(strings.TrimSpace(severity))]
+		if !ok {
+			weight = severityWeightMap["info"]
+		}
+		if weight <= thresholdWeight {
+			total += count
+		}
+	}
+	return total
 }
 
 func runChecks(args []string) error {
@@ -2699,6 +2719,245 @@ func runPolicyExplain(args []string) error {
 	return nil
 }
 
+func runMatrix(args []string) error {
+	if len(args) == 0 {
+		return usageError("usage: governor matrix <run> [flags]")
+	}
+	switch args[0] {
+	case "run":
+		return runMatrixRun(args[1:])
+	default:
+		return usageError(fmt.Sprintf("unknown matrix subcommand %q", args[0]))
+	}
+}
+
+func runMatrixRun(args []string) error {
+	fs := flag.NewFlagSet("matrix run", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	configPath := fs.String("config", matrix.DefaultPath(), "Path to matrix config")
+	outDir := fs.String("out", "", "Output directory for matrix summary artifacts")
+	jsonOut := fs.Bool("json", false, "Print matrix summary as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("matrix run does not accept positional args")
+	}
+
+	cfg, err := matrix.Load(*configPath)
+	if err != nil {
+		return err
+	}
+
+	runStarted := time.Now().UTC()
+	matrixOutDir, err := resolveMatrixOutDir(*outDir, runStarted)
+	if err != nil {
+		return err
+	}
+	matrixOutDir, err = safefile.EnsureFreshDir(matrixOutDir, 0o700)
+	if err != nil {
+		return fmt.Errorf("create matrix output dir: %w", err)
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+
+	targets := make([]matrix.TargetSummary, 0, len(cfg.Targets))
+	failedTargets := 0
+	passedTargets := 0
+	totalFindings := 0
+	aggregateSeverity := map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+
+	for _, target := range cfg.Targets {
+		effective := matrix.MergeOptions(cfg.Defaults, target.TargetOptions)
+		targetStarted := time.Now().UTC()
+		targetRunDir := filepath.Join(matrixOutDir, sanitizeTargetName(target.Name))
+		cmdArgs := buildMatrixAuditArgs(target, effective, targetRunDir)
+		cmd := exec.Command(exePath, cmdArgs...)
+		cmd.Env = os.Environ()
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		runErr := cmd.Run()
+
+		exitCode := 0
+		status := "passed"
+		if runErr != nil {
+			status = "failed"
+			if exitErr, ok := runErr.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else {
+				return fmt.Errorf("run target %s: %w", target.Name, runErr)
+			}
+		}
+
+		targetSummary := matrix.TargetSummary{
+			Name:         target.Name,
+			Path:         target.Path,
+			Status:       status,
+			RunDir:       targetRunDir,
+			JSONPath:     filepath.Join(targetRunDir, "audit.json"),
+			MarkdownPath: filepath.Join(targetRunDir, "audit.md"),
+			HTMLPath:     filepath.Join(targetRunDir, "audit.html"),
+			ExitCode:     exitCode,
+			DurationMS:   time.Since(targetStarted).Milliseconds(),
+		}
+		if rawReport, readErr := os.ReadFile(targetSummary.JSONPath); readErr == nil {
+			var report model.AuditReport
+			if err := json.Unmarshal(rawReport, &report); err == nil {
+				targetSummary.Findings = len(report.Findings)
+				targetSummary.Errors = len(report.Errors)
+				totalFindings += len(report.Findings)
+				for sev, count := range report.CountsBySeverity {
+					aggregateSeverity[strings.ToLower(strings.TrimSpace(sev))] += count
+				}
+			}
+		}
+		targets = append(targets, targetSummary)
+
+		if status == "failed" {
+			failedTargets++
+			if cfg.Aggregation.FailFast {
+				break
+			}
+		} else {
+			passedTargets++
+		}
+	}
+
+	summary := matrix.Summary{
+		APIVersion:    matrix.APIVersion,
+		ConfigPath:    strings.TrimSpace(*configPath),
+		StartedAt:     runStarted,
+		CompletedAt:   time.Now().UTC(),
+		Targets:       targets,
+		FailedTargets: failedTargets,
+		TotalFindings: totalFindings,
+	}
+	summary.DurationMS = summary.CompletedAt.Sub(summary.StartedAt).Milliseconds()
+	requireAll := true
+	if cfg.Aggregation.RequireAllTargets != nil {
+		requireAll = *cfg.Aggregation.RequireAllTargets
+	}
+	if requireAll {
+		summary.Passed = failedTargets == 0
+	} else {
+		summary.Passed = passedTargets > 0
+	}
+	if threshold := strings.ToLower(strings.TrimSpace(cfg.Aggregation.OverallFailOn)); threshold != "" && threshold != "none" {
+		thresholdWeight, ok := severityWeightMap[threshold]
+		if !ok {
+			return fmt.Errorf("invalid aggregation overall_fail_on %q", threshold)
+		}
+		if countAtOrAboveCounts(aggregateSeverity, thresholdWeight) > 0 {
+			summary.Passed = false
+		}
+	}
+
+	jsonPath, mdPath, err := matrix.WriteSummary(matrixOutDir, summary)
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		payload, err := json.MarshalIndent(summary, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal matrix summary: %w", err)
+		}
+		fmt.Println(string(payload))
+	} else {
+		fmt.Printf("matrix summary json: %s\n", jsonPath)
+		fmt.Printf("matrix summary md:   %s\n", mdPath)
+		fmt.Printf("targets: %d passed=%t failed=%d findings=%d\n", len(summary.Targets), summary.Passed, summary.FailedTargets, summary.TotalFindings)
+	}
+
+	if !summary.Passed {
+		return errors.New("matrix run failed")
+	}
+	return nil
+}
+
+func buildMatrixAuditArgs(target matrix.Target, opts matrix.TargetOptions, outDir string) []string {
+	args := []string{"audit", target.Path, "--out", outDir, "--no-tui"}
+	if strings.TrimSpace(opts.FailOn) != "" && strings.TrimSpace(opts.FailOn) != "none" {
+		args = append(args, "--fail-on", strings.TrimSpace(opts.FailOn))
+	}
+	if strings.TrimSpace(opts.Policy) != "" {
+		args = append(args, "--policy", strings.TrimSpace(opts.Policy))
+	}
+	if opts.RequirePolicy != nil && *opts.RequirePolicy {
+		args = append(args, "--require-policy")
+	}
+	if strings.TrimSpace(opts.Baseline) != "" {
+		args = append(args, "--baseline", strings.TrimSpace(opts.Baseline))
+	}
+	if strings.TrimSpace(opts.ChecksDir) != "" {
+		args = append(args, "--checks-dir", strings.TrimSpace(opts.ChecksDir))
+	}
+	if opts.NoCustomChecks != nil && *opts.NoCustomChecks {
+		args = append(args, "--no-custom-checks")
+	}
+	if opts.Quick != nil && *opts.Quick {
+		args = append(args, "--quick")
+	}
+	for _, check := range opts.OnlyChecks {
+		args = append(args, "--only-check", check)
+	}
+	for _, check := range opts.SkipChecks {
+		args = append(args, "--skip-check", check)
+	}
+	if strings.TrimSpace(opts.Suppressions) != "" {
+		args = append(args, "--suppressions", strings.TrimSpace(opts.Suppressions))
+	}
+	if opts.Workers != nil {
+		args = append(args, "--workers", fmt.Sprintf("%d", *opts.Workers))
+	}
+	if strings.TrimSpace(opts.AIProfile) != "" {
+		args = append(args, "--ai-profile", strings.TrimSpace(opts.AIProfile))
+	}
+	if opts.IncludeTestFiles != nil && *opts.IncludeTestFiles {
+		args = append(args, "--include-test-files")
+	}
+	return args
+}
+
+func resolveMatrixOutDir(raw string, now time.Time) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw != "" {
+		return filepath.Abs(raw)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve cwd: %w", err)
+	}
+	return filepath.Join(cwd, ".governor", "runs", "matrix-"+now.Format("20060102-150405")), nil
+}
+
+func sanitizeTargetName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "target"
+	}
+	var b strings.Builder
+	for _, ch := range name {
+		switch {
+		case ch >= 'a' && ch <= 'z':
+			b.WriteRune(ch)
+		case ch >= 'A' && ch <= 'Z':
+			b.WriteRune(ch + ('a' - 'A'))
+		case ch >= '0' && ch <= '9':
+			b.WriteRune(ch)
+		case ch == '-' || ch == '_':
+			b.WriteRune(ch)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	return strings.Trim(b.String(), "-_")
+}
+
 func resolvePolicyInput(rawPath string, require bool) (string, policy.Policy, bool, error) {
 	path := strings.TrimSpace(rawPath)
 	if path == "" {
@@ -3365,6 +3624,7 @@ func printUsage() {
 	fmt.Println("  governor init [flags]")
 	fmt.Println("  governor audit <path-or-zip> [flags]")
 	fmt.Println("  governor doctor [flags]")
+	fmt.Println("  governor matrix run [flags]")
 	fmt.Println("  governor policy <validate|explain> [flags]")
 	fmt.Println("  governor ci [<path>] [flags]")
 	fmt.Println("  governor findings <suppress|unsuppress|prune|list|expired> [flags]")
@@ -3392,6 +3652,11 @@ func printUsage() {
 	fmt.Println("Flags (doctor):")
 	fmt.Println("  --json              Output doctor report as JSON")
 	fmt.Println("  --strict            Treat warnings as failures")
+	fmt.Println("")
+	fmt.Println("Flags (matrix run):")
+	fmt.Println("  --config <path>     Matrix config path (default ./.governor/matrix.yaml)")
+	fmt.Println("  --out <dir>         Matrix summary output directory")
+	fmt.Println("  --json              Print matrix summary JSON to stdout")
 	fmt.Println("")
 	fmt.Println("Flags (audit):")
 	fmt.Println("  --out <dir>         Output directory (default ./.governor/runs/<timestamp>)")
