@@ -35,6 +35,7 @@ import (
 	"governor/internal/scan"
 	"governor/internal/suppress"
 	"governor/internal/taps"
+	tapstrust "governor/internal/taps/trust"
 	"governor/internal/trust"
 	"governor/internal/tui"
 	"governor/internal/update"
@@ -823,6 +824,8 @@ func runChecks(args []string) error {
 		return runChecksLock(args[1:])
 	case "update-packs":
 		return runChecksUpdatePacks(args[1:])
+	case "trust":
+		return runChecksTrust(args[1:])
 	default:
 		return usageError(fmt.Sprintf("unknown checks subcommand %q", args[0]))
 	}
@@ -1359,6 +1362,8 @@ func runChecksInstallPack(args []string) error {
 
 	unlock := fs.Bool("unlock", false, "Bypass lockfile resolution and install latest available pack")
 	lockFile := fs.String("lock-file", "", "Path to checks lock file (default ./.governor/checks.lock.yaml)")
+	trustPolicyPath := fs.String("trust-policy", "", "Path to check trust policy (default ./.governor/check-trust.yaml if present)")
+	strictTrust := fs.Bool("strict-trust", false, "Block install when trust policy checks fail")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1393,9 +1398,15 @@ func runChecksInstallPack(args []string) error {
 		return err
 	}
 
+	resolvedTrustPolicyPath, trustPolicy, hasTrustPolicy, err := resolveTrustPolicy(*trustPolicyPath)
+	if err != nil {
+		return err
+	}
+
 	var selected taps.LocatedPack
-	if locked, found := taps.FindLockedPack(lock, packName); found && !*unlock {
-		selected, err = taps.ResolveLockedPack(candidates, locked)
+	lockedPack, hasLocked := taps.FindLockedPack(lock, packName)
+	if hasLocked && !*unlock {
+		selected, err = taps.ResolveLockedPack(candidates, lockedPack)
 		if err != nil {
 			return fmt.Errorf("locked pack mismatch for %q: %w (run 'governor checks update-packs' or use --unlock)", packName, err)
 		}
@@ -1403,6 +1414,13 @@ func runChecksInstallPack(args []string) error {
 		selected, err = taps.SelectLatestPack(candidates)
 		if err != nil {
 			return err
+		}
+	}
+	if hasTrustPolicy {
+		result := tapstrust.ValidatePack(lockedPack, hasLocked, selected, trustPolicy)
+		emitTrustValidation(result)
+		if tapstrust.ShouldBlock(trustPolicy.Mode, *strictTrust, result) {
+			return fmt.Errorf("trust validation failed for pack %q (policy: %s)", packName, resolvedTrustPolicyPath)
 		}
 	}
 
@@ -1512,6 +1530,8 @@ func runChecksUpdatePacks(args []string) error {
 	allowMajor := fs.Bool("major", false, "Allow major-version updates")
 	dryRun := fs.Bool("dry-run", false, "Show updates without modifying the lock file")
 	lockFile := fs.String("lock-file", "", "Path to checks lock file (default ./.governor/checks.lock.yaml)")
+	trustPolicyPath := fs.String("trust-policy", "", "Path to check trust policy (default ./.governor/check-trust.yaml if present)")
+	strictTrust := fs.Bool("strict-trust", false, "Block updates when trust policy checks fail")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1530,6 +1550,10 @@ func runChecksUpdatePacks(args []string) error {
 	if len(lock.Packs) == 0 {
 		fmt.Println("no locked packs to update")
 		return nil
+	}
+	resolvedTrustPolicyPath, trustPolicy, hasTrustPolicy, err := resolveTrustPolicy(*trustPolicyPath)
+	if err != nil {
+		return err
 	}
 
 	cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
@@ -1573,6 +1597,13 @@ func runChecksUpdatePacks(args []string) error {
 			fmt.Printf("skipping major update for %s: %s -> %s (use --major)\n", locked.Name, locked.Version, latest.Version)
 			continue
 		}
+		if hasTrustPolicy {
+			result := tapstrust.ValidatePack(locked, true, latest, trustPolicy)
+			emitTrustValidation(result)
+			if tapstrust.ShouldBlock(trustPolicy.Mode, *strictTrust, result) {
+				return fmt.Errorf("trust validation failed for pack %q (policy: %s)", locked.Name, resolvedTrustPolicyPath)
+			}
+		}
 		updates = append(updates, updateItem{old: locked, new: latest})
 	}
 
@@ -1597,6 +1628,184 @@ func runChecksUpdatePacks(args []string) error {
 		return err
 	}
 	fmt.Printf("updated lock file: %s (%d updates)\n", lockPath, len(updates))
+	return nil
+}
+
+func runChecksTrust(args []string) error {
+	if len(args) == 0 {
+		return usageError("usage: governor checks trust <validate|pin> [flags]")
+	}
+	switch args[0] {
+	case "validate":
+		return runChecksTrustValidate(args[1:])
+	case "pin":
+		return runChecksTrustPin(args[1:])
+	default:
+		return usageError(fmt.Sprintf("unknown checks trust subcommand %q", args[0]))
+	}
+}
+
+func runChecksTrustValidate(args []string) error {
+	fs := flag.NewFlagSet("governor checks trust validate", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	trustPolicyPath := fs.String("trust-policy", "", "Path to check trust policy (default ./.governor/check-trust.yaml)")
+	lockFile := fs.String("lock-file", "", "Path to checks lock file (default ./.governor/checks.lock.yaml)")
+	strict := fs.Bool("strict", false, "Fail when trust warnings or errors are present")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("checks trust validate does not accept positional args")
+	}
+
+	resolvedPath, trustPolicy, hasPolicy, err := resolveTrustPolicy(*trustPolicyPath)
+	if err != nil {
+		return err
+	}
+	if !hasPolicy {
+		fmt.Println("no trust policy found")
+		return nil
+	}
+
+	lockPath := strings.TrimSpace(*lockFile)
+	if lockPath == "" {
+		lockPath = taps.DefaultLockPath()
+	}
+	lock, err := taps.LoadLock(lockPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
+	if err != nil {
+		return err
+	}
+	allPacks, err := taps.DiscoverPacks(cfg)
+	if err != nil {
+		return err
+	}
+	byName := make(map[string][]taps.LocatedPack, len(allPacks))
+	for _, pack := range allPacks {
+		byName[strings.ToLower(pack.Name)] = append(byName[strings.ToLower(pack.Name)], pack)
+	}
+
+	totalErrors := 0
+	totalWarnings := 0
+	for _, locked := range lock.Packs {
+		candidates := byName[strings.ToLower(locked.Name)]
+		if len(candidates) == 0 {
+			totalWarnings++
+			fmt.Fprintf(os.Stderr, "warning: locked pack %s missing from taps\n", locked.Name)
+			continue
+		}
+		selected, err := taps.ResolveLockedPack(candidates, locked)
+		if err != nil {
+			totalErrors++
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			continue
+		}
+		result := tapstrust.ValidatePack(locked, true, selected, trustPolicy)
+		totalErrors += len(result.Errors)
+		totalWarnings += len(result.Warnings)
+		emitTrustValidation(result)
+	}
+
+	fmt.Printf("trust policy: %s\n", resolvedPath)
+	fmt.Printf("summary: errors=%d warnings=%d\n", totalErrors, totalWarnings)
+	if totalErrors > 0 {
+		return errors.New("trust validation failed")
+	}
+	if *strict && totalWarnings > 0 {
+		return errors.New("trust validation failed in strict mode due to warnings")
+	}
+	return nil
+}
+
+func runChecksTrustPin(args []string) error {
+	fs := flag.NewFlagSet("governor checks trust pin", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	source := fs.String("source", "", "Optional source tap name override")
+	trustPolicyPath := fs.String("trust-policy", "", "Path to check trust policy (default ./.governor/check-trust.yaml)")
+	lockFile := fs.String("lock-file", "", "Path to checks lock file (default ./.governor/checks.lock.yaml)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 1 {
+		return errors.New("usage: governor checks trust pin <pack> [--source <tap>]")
+	}
+	packName := strings.TrimSpace(fs.Args()[0])
+
+	lockPath := strings.TrimSpace(*lockFile)
+	if lockPath == "" {
+		lockPath = taps.DefaultLockPath()
+	}
+	lock, err := taps.LoadLock(lockPath)
+	if err != nil {
+		return err
+	}
+	locked, hasLocked := taps.FindLockedPack(lock, packName)
+
+	cfg, err := taps.LoadConfig(taps.DefaultConfigPath())
+	if err != nil {
+		return err
+	}
+	allPacks, err := taps.DiscoverPacks(cfg)
+	if err != nil {
+		return err
+	}
+	candidates := taps.FindPackCandidates(allPacks, packName)
+	if len(candidates) == 0 && !hasLocked {
+		return fmt.Errorf("pack %q not found in taps and lockfile", packName)
+	}
+
+	var selected taps.LocatedPack
+	if hasLocked && len(candidates) > 0 {
+		selected, err = taps.ResolveLockedPack(candidates, locked)
+		if err != nil {
+			selected, err = taps.SelectLatestPack(candidates)
+			if err != nil {
+				return err
+			}
+		}
+	} else if len(candidates) > 0 {
+		selected, err = taps.SelectLatestPack(candidates)
+		if err != nil {
+			return err
+		}
+	} else {
+		selected = taps.LocatedPack{
+			Name:    locked.Name,
+			TapName: locked.Source,
+			Version: locked.Version,
+			Digest:  locked.Digest,
+			Commit:  locked.Commit,
+		}
+	}
+
+	if strings.TrimSpace(*source) != "" {
+		selected.TapName = strings.TrimSpace(*source)
+	}
+
+	resolvedPath := strings.TrimSpace(*trustPolicyPath)
+	if resolvedPath == "" {
+		resolvedPath = tapstrust.DefaultPath()
+	}
+	trustPolicy, err := loadOrInitTrustPolicy(resolvedPath)
+	if err != nil {
+		return err
+	}
+	tapstrust.UpsertPinnedPack(&trustPolicy, tapstrust.PinnedPack{
+		Pack:    selected.Name,
+		Source:  selected.TapName,
+		Version: selected.Version,
+		Digest:  selected.Digest,
+		Commit:  selected.Commit,
+	})
+	if err := tapstrust.Save(resolvedPath, trustPolicy); err != nil {
+		return err
+	}
+	fmt.Printf("pinned pack %s in %s\n", selected.Name, resolvedPath)
 	return nil
 }
 
@@ -2563,6 +2772,46 @@ func fallback(value string, defaultValue string) string {
 	return value
 }
 
+func resolveTrustPolicy(rawPath string) (string, tapstrust.Policy, bool, error) {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		defaultPath := tapstrust.DefaultPath()
+		if _, err := os.Stat(defaultPath); err == nil {
+			path = defaultPath
+		} else {
+			return "", tapstrust.Policy{}, false, nil
+		}
+	}
+	p, err := tapstrust.Load(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", tapstrust.Policy{}, false, nil
+		}
+		return "", tapstrust.Policy{}, false, err
+	}
+	return path, p, true, nil
+}
+
+func loadOrInitTrustPolicy(path string) (tapstrust.Policy, error) {
+	p, err := tapstrust.Load(path)
+	if err == nil {
+		return p, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return tapstrust.Normalize(tapstrust.Policy{APIVersion: tapstrust.APIVersion, Mode: tapstrust.ModeWarn}), nil
+	}
+	return tapstrust.Policy{}, err
+}
+
+func emitTrustValidation(result tapstrust.ValidationResult) {
+	for _, warning := range result.Warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	}
+	for _, trustErr := range result.Errors {
+		fmt.Fprintf(os.Stderr, "error: %s\n", trustErr)
+	}
+}
+
 func runCI(args []string) error {
 	fs := flag.NewFlagSet("ci", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
@@ -3120,13 +3369,14 @@ func printUsage() {
 	fmt.Println("  governor ci [<path>] [flags]")
 	fmt.Println("  governor findings <suppress|unsuppress|prune|list|expired> [flags]")
 	fmt.Println("  governor isolate audit <path-or-zip> [flags]")
-	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable|lock|update-packs>] [flags]")
+	fmt.Println("  governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable|lock|update-packs|trust>] [flags]")
 	fmt.Println("  governor checks tap <source>           Register a check pack source")
 	fmt.Println("  governor checks untap <name>           Remove a registered source")
 	fmt.Println("  governor checks install-pack <pack>    Install a check pack")
 	fmt.Println("  governor checks list-packs             List available check packs")
 	fmt.Println("  governor checks lock                   Write checks lock file")
 	fmt.Println("  governor checks update-packs           Update locked pack versions")
+	fmt.Println("  governor checks trust <validate|pin>   Validate/pin check-pack trust policy")
 	fmt.Println("  governor hooks <install|remove|status>")
 	fmt.Println("  governor diff <old.json> <new.json> [flags]")
 	fmt.Println("  governor scan <file...> [flags]")
@@ -3191,6 +3441,11 @@ func printUsage() {
 	fmt.Println("")
 	fmt.Println("Flags (policy):")
 	fmt.Println("  --file <path>       Policy file path (default ./.governor/policy.yaml)")
+	fmt.Println("")
+	fmt.Println("Flags (checks trust):")
+	fmt.Println("  --trust-policy <path>  Trust policy path (default ./.governor/check-trust.yaml)")
+	fmt.Println("  --strict               Fail on trust warnings/errors (validate)")
+	fmt.Println("  --source <tap>         Override source when pinning a pack")
 	fmt.Println("")
 	fmt.Println("Flags (findings suppress):")
 	fmt.Println("  <title-pattern>     Title glob pattern (positional)")

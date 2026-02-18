@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -24,6 +25,7 @@ type LockedPack struct {
 	SourceURL string    `yaml:"source_url,omitempty" json:"source_url,omitempty"`
 	Version   string    `yaml:"version,omitempty" json:"version,omitempty"`
 	Digest    string    `yaml:"digest,omitempty" json:"digest,omitempty"`
+	Commit    string    `yaml:"commit,omitempty" json:"commit,omitempty"`
 	LockedAt  time.Time `yaml:"locked_at,omitempty" json:"locked_at,omitempty"`
 }
 
@@ -37,6 +39,7 @@ type LocatedPack struct {
 	Description string
 	Version     string
 	Digest      string
+	Commit      string
 	TapName     string
 	TapURL      string
 	Dir         string
@@ -157,6 +160,10 @@ func DiscoverPacks(cfg *Config) ([]LocatedPack, error) {
 		if err != nil {
 			return nil, fmt.Errorf("list packs for %s: %w", tap.Name, err)
 		}
+		commit := ""
+		if c, err := tapHEADCommit(tap.Path); err == nil {
+			commit = c
+		}
 		for _, p := range packs {
 			if strings.TrimSpace(p.Name) == "" {
 				continue
@@ -174,6 +181,7 @@ func DiscoverPacks(cfg *Config) ([]LocatedPack, error) {
 				Description: strings.TrimSpace(p.Description),
 				Version:     strings.TrimSpace(p.Version),
 				Digest:      digest,
+				Commit:      commit,
 				TapName:     strings.TrimSpace(tap.Name),
 				TapURL:      strings.TrimSpace(tap.URL),
 				Dir:         dir,
@@ -249,8 +257,18 @@ func LockedPackFromLocated(pack LocatedPack, now time.Time) LockedPack {
 		SourceURL: pack.TapURL,
 		Version:   pack.Version,
 		Digest:    pack.Digest,
+		Commit:    pack.Commit,
 		LockedAt:  now.UTC(),
 	}
+}
+
+func tapHEADCommit(tapDir string) (string, error) {
+	cmd := exec.Command("git", "-C", tapDir, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func ComputePackDigest(packDir string) (string, error) {

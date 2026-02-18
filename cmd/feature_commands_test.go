@@ -9,6 +9,7 @@ import (
 	"governor/internal/checks"
 	"governor/internal/suppress"
 	"governor/internal/taps"
+	tapstrust "governor/internal/taps/trust"
 )
 
 func TestRunDoctor_StrictMode(t *testing.T) {
@@ -214,5 +215,51 @@ func TestRunFindingsUnsuppressAndPrune(t *testing.T) {
 	}
 	if len(loaded) != 0 {
 		t.Fatalf("expected all remaining suppressions pruned, got %d", len(loaded))
+	}
+}
+
+func TestRunChecksTrustPinAndValidate(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	home := filepath.Join(t.TempDir(), "home")
+	t.Setenv("HOME", home)
+	restoreWD := setWorkingDir(t, repoRoot)
+	defer restoreWD()
+
+	tapRoot := filepath.Join(home, "tap-src")
+	packDir := filepath.Join(tapRoot, "packs", "web")
+	if err := os.MkdirAll(packDir, 0o755); err != nil {
+		t.Fatalf("mkdir pack dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "pack.yaml"), []byte("name: web\nversion: 1.0.0\n"), 0o644); err != nil {
+		t.Fatalf("write pack meta: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "web.check.yaml"), []byte("id: web-check\n"), 0o644); err != nil {
+		t.Fatalf("write check: %v", err)
+	}
+
+	cfg := &taps.Config{Taps: []taps.Tap{{Name: "acme/checks", URL: "https://example.com/acme/checks.git", Path: tapRoot}}}
+	if err := taps.SaveConfig(taps.DefaultConfigPath(), cfg); err != nil {
+		t.Fatalf("save taps config: %v", err)
+	}
+	if err := runChecksLock(nil); err != nil {
+		t.Fatalf("runChecksLock failed: %v", err)
+	}
+
+	if err := runChecksTrustPin([]string{"web"}); err != nil {
+		t.Fatalf("runChecksTrustPin failed: %v", err)
+	}
+	policy, err := tapstrust.Load(tapstrust.DefaultPath())
+	if err != nil {
+		t.Fatalf("load trust policy: %v", err)
+	}
+	if _, ok := tapstrust.FindPinnedPack(policy, "web"); !ok {
+		t.Fatal("expected pinned pack entry for web")
+	}
+
+	if err := runChecksTrustValidate(nil); err != nil {
+		t.Fatalf("runChecksTrustValidate failed: %v", err)
 	}
 }
