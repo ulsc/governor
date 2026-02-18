@@ -35,6 +35,8 @@ Disclaimer note:
 - [Init Command](#init-command)
 - [CI/CD](#cicd)
 - [Audit Command](#audit-command)
+- [Matrix Command](#matrix-command)
+- [Policy Command](#policy-command)
 - [Isolated Runs](#isolated-runs)
 - [Checks Command](#checks-command)
 - [Scan Command](#scan-command)
@@ -282,6 +284,8 @@ governor audit <path-or-zip> [flags]
 - `--skip-check <id>`: skip specified check IDs (repeatable)
 - `--no-custom-checks`: run built-in checks only
 - `--quick`: run only rule-engine checks (no AI, no network)
+- `--policy <path>`: apply policy file (defaults to `./.governor/policy.yaml` when present)
+- `--require-policy`: fail when no policy file can be resolved
 - `--changed-only`: scan only files with uncommitted changes (vs HEAD)
 - `--changed-since <ref>`: scan only files changed since a git ref (branch, tag, or commit)
 - `--staged`: scan only staged files (for pre-commit use)
@@ -319,7 +323,91 @@ governor audit ./my-app --changed-since main
 
 # Quick scan of staged files (ideal for pre-commit)
 governor audit ./my-app --staged --quick --fail-on high
+
+# Enforce policy-as-code gates
+governor audit ./my-app --policy ./.governor/policy.yaml --require-policy
 ```
+
+## Matrix Command
+
+```bash
+governor matrix run [flags]
+```
+
+Runs multiple audits from a single matrix file (monorepo-friendly), then writes aggregate summary artifacts.
+
+Flags:
+- `--config <path>`: matrix config path (default `./.governor/matrix.yaml`)
+- `--out <dir>`: output directory for matrix summaries and target runs
+- `--json`: print matrix summary JSON to stdout
+
+Config schema:
+
+```yaml
+api_version: governor/matrix/v1
+defaults:
+  fail_on: high
+  ai_profile: codex
+  policy: ./.governor/policy.yaml
+  require_policy: true
+targets:
+  - name: api
+    path: ./services/api
+    quick: true
+  - name: web
+    path: ./apps/web
+    fail_on: medium
+aggregation:
+  fail_fast: false
+  overall_fail_on: high
+  require_all_targets: true
+```
+
+Notes:
+- Target options merge as `defaults` then per-target override.
+- Each target runs as an audit subprocess (`governor audit <target.path> --no-tui ...`).
+- Matrix writes `matrix-summary.json` and `matrix-summary.md` plus per-target audit artifacts under the matrix output dir.
+
+## Policy Command
+
+```bash
+governor policy <validate|explain> [flags]
+```
+
+Commands:
+- `governor policy validate --file ./.governor/policy.yaml`
+- `governor policy explain --file ./.governor/policy.yaml`
+
+Flag:
+- `--file <path>`: policy file path (default `./.governor/policy.yaml`)
+
+Example policy:
+
+```yaml
+api_version: governor/policy/v1
+defaults:
+  fail_on_severity: high
+  max_suppression_ratio: 0.40
+  max_new_findings: 0
+  require_checks: [appsec]
+rules:
+  - name: backend-relaxed
+    when:
+      paths: ["api/**"]
+    enforce:
+      fail_on_severity: medium
+waivers:
+  - id: waiver-123
+    reason: accepted risk pending redesign
+    expires: "2099-01-01"
+    match:
+      checks: ["appsec"]
+```
+
+Policy behavior:
+- `audit` and `ci` accept `--policy` and `--require-policy`.
+- If policy is applied, Governor evaluates violations after audit execution.
+- Unwaived policy violations fail command exit status (`audit`/`ci`) and are included in `audit.json`, `audit.md`, and `audit.html`.
 
 ## Isolated Runs
 
@@ -390,7 +478,7 @@ Common diagnostic labels in worker/preflight errors:
 ## Checks Command
 
 ```bash
-governor checks [<tui|init|add|extract|list|validate|doctor|explain|enable|disable|lock|update-packs>]
+governor checks [<tui|init|add|extract|list|validate|doctor|explain|enable|disable|lock|update-packs|trust>]
 ```
 
 Default behavior:
@@ -522,6 +610,47 @@ governor checks disable insecure-admin-surface
 Default behavior without `--checks-dir`:
 - Searches `./.governor/checks` first, then `~/.governor/checks`.
 - Enables/disables the first matching check by that precedence.
+
+### `checks trust validate` / `checks trust pin`
+
+Validate or pin check-pack trust policy for taps/lockfile workflows.
+
+```bash
+# Validate all locked packs against trust policy and taps
+governor checks trust validate --trust-policy ./.governor/check-trust.yaml --strict
+
+# Pin one pack (creates trust policy file if missing)
+governor checks trust pin web
+```
+
+Trust policy schema:
+
+```yaml
+api_version: governor/check-trust/v1
+mode: warn # off|warn|strict
+trusted_sources:
+  - name: acme/checks
+    url: https://example.com/acme/checks.git
+pinned_packs:
+  - pack: web
+    source: acme/checks
+    version: 1.2.3
+    digest: sha256:...
+    commit: abcdef123456
+requirements:
+  require_digest: true
+  require_lock_entry: true
+  allow_major_updates: false
+```
+
+Mode behavior:
+- `off`: trust checks never block install/update.
+- `warn`: emits warnings/errors but does not block install/update.
+- `strict`: blocks install/update when trust errors exist.
+
+Pack install/update integration:
+- `governor checks install-pack` and `governor checks update-packs` accept `--trust-policy` and `--strict-trust`.
+- `--strict-trust` forces blocking behavior regardless of policy mode.
 
 ## Hooks Command
 
@@ -815,6 +944,16 @@ workspace/                 # deleted by default; kept for warning/failed runs wi
 ```
 
 `audit.json` is intended for automation. `audit.md` and `audit.html` are intended for humans. The HTML report is interactive -- it includes severity/category/check filtering, text search, collapsible finding cards, and a dark mode toggle.
+
+When policy is enabled (`--policy`), audit artifacts also include a `policy_decision` section with violations and waiver status.
+
+Matrix runs additionally write:
+
+```text
+matrix-summary.json
+matrix-summary.md
+<target-name>/audit.{json,md,html}
+```
 
 Git hygiene:
 - Keep `.governor/.gitignore` tracked so `runs/` artifacts stay out of git while `.governor/checks/` can be versioned.
