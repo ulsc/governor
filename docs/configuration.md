@@ -9,7 +9,7 @@ Governor reads config from two YAML files, merged in order:
 1. **Global**: `~/.governor/config.yaml`
 2. **Repo-local**: `./.governor/config.yaml` (takes precedence over global)
 
-Missing files are silently ignored. If neither file exists, Governor uses built-in defaults.
+Missing files are silently ignored. If neither file exists, Governor uses built-in defaults and automatically falls back to rule-engine-only checks (equivalent to `--quick`) until you configure an AI provider.
 
 > **Tip:** Run `governor init` to scaffold the repo-local `.governor/` directory with a commented config template, `.gitignore`, and `checks/` directory.
 
@@ -248,6 +248,18 @@ The global equivalent lives at `~/.governor/`:
 Keep `.governor/.gitignore` tracked so `runs/` output stays out of version control while `config.yaml`, `ai/profiles.yaml`, and `checks/` can be committed and shared with your team.
 
 ## Common Configuration Patterns
+
+### Zero-config (no setup required)
+
+The simplest way to use Governor — no config file, no AI keys:
+
+```bash
+governor audit .
+```
+
+Governor detects that no AI provider is configured and automatically runs only rule-engine checks (hardcoded credentials, command injection, prompt injection, path traversal, insecure crypto). After the audit, it prints a hint showing how to enable AI-powered checks for deeper analysis.
+
+This is equivalent to `governor audit . --quick`, but the auto-detection means new users never need to know about the `--quick` flag to get started.
 
 ### Team with OpenAI API
 
