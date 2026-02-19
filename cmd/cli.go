@@ -4366,18 +4366,21 @@ func runQuickstartWithIO(root string, in io.Reader, out io.Writer) error {
 
 	scanner := bufio.NewScanner(in)
 
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Welcome to Governor — security auditing for AI-generated code.")
-	fmt.Fprintln(out, "")
+	w := func(format string, a ...any) { _, _ = fmt.Fprintf(out, format, a...) }
+	wln := func(s string) { _, _ = fmt.Fprintln(out, s) }
+
+	wln("")
+	wln("Welcome to Governor — security auditing for AI-generated code.")
+	wln("")
 
 	// Detect project type.
 	proj := detect.Project(absRoot)
 	if proj.Type != "" {
-		fmt.Fprintf(out, "Detected project type: %s\n", proj.Label)
+		w("Detected project type: %s\n", proj.Label)
 	} else {
-		fmt.Fprintln(out, "Project type: unknown")
+		wln("Project type: unknown")
 	}
-	fmt.Fprintln(out, "")
+	wln("")
 
 	// Prompt 1: Initialize .governor directory.
 	initDir := promptYN(scanner, out, "Initialize .governor directory?", true)
@@ -4385,10 +4388,10 @@ func runQuickstartWithIO(root string, in io.Reader, out io.Writer) error {
 		if err := initGovDir(absRoot, ""); err != nil {
 			return fmt.Errorf("initialize .governor: %w", err)
 		}
-		fmt.Fprintln(out, "  created .governor/config.yaml")
-		fmt.Fprintln(out, "  created .governor/.gitignore")
-		fmt.Fprintln(out, "  created .governor/checks/")
-		fmt.Fprintln(out, "")
+		wln("  created .governor/config.yaml")
+		wln("  created .governor/.gitignore")
+		wln("  created .governor/checks/")
+		wln("")
 	}
 
 	// Prompt 2: Install pre-commit hook (only if .git exists).
@@ -4404,50 +4407,50 @@ func runQuickstartWithIO(root string, in io.Reader, out io.Writer) error {
 			if err := os.WriteFile(hookPath, []byte(hookScript), 0o755); err != nil {
 				return fmt.Errorf("write pre-commit hook: %w", err)
 			}
-			fmt.Fprintf(out, "  installed pre-commit hook at %s\n", hookPath)
-			fmt.Fprintln(out, "")
+			w("  installed pre-commit hook at %s\n", hookPath)
+			wln("")
 		}
 	}
 
 	// Prompt 3: Set up AI-powered checks.
 	setupAI := promptYN(scanner, out, "Set up AI-powered checks?", false)
 	if setupAI {
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "To use AI-powered checks, configure an AI provider:")
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  Option 1 — Codex CLI (default):")
-		fmt.Fprintln(out, "    Install: npm install -g @openai/codex")
-		fmt.Fprintln(out, "    Set:     export OPENAI_API_KEY=<your-key>")
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  Option 2 — OpenAI-compatible API:")
-		fmt.Fprintln(out, "    governor init --ai-profile openai")
-		fmt.Fprintln(out, "    Set:     export OPENAI_API_KEY=<your-key>")
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  Option 3 — Claude:")
-		fmt.Fprintln(out, "    governor init --ai-profile claude")
-		fmt.Fprintln(out, "    Set:     export ANTHROPIC_API_KEY=<your-key>")
-		fmt.Fprintln(out, "")
+		wln("")
+		wln("To use AI-powered checks, configure an AI provider:")
+		wln("")
+		wln("  Option 1 — Codex CLI (default):")
+		wln("    Install: npm install -g @openai/codex")
+		wln("    Set:     export OPENAI_API_KEY=<your-key>")
+		wln("")
+		wln("  Option 2 — OpenAI-compatible API:")
+		wln("    governor init --ai-profile openai")
+		wln("    Set:     export OPENAI_API_KEY=<your-key>")
+		wln("")
+		wln("  Option 3 — Claude:")
+		wln("    governor init --ai-profile claude")
+		wln("    Set:     export ANTHROPIC_API_KEY=<your-key>")
+		wln("")
 	}
 
 	// Prompt 4: Run first audit.
 	runNow := promptYN(scanner, out, "Run your first audit now?", true)
 	if runNow {
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "Running: governor audit --quick ...")
-		fmt.Fprintln(out, "")
+		wln("")
+		wln("Running: governor audit --quick ...")
+		wln("")
 		if auditErr := runAudit([]string{absRoot, "--quick"}); auditErr != nil {
-			fmt.Fprintf(out, "Audit completed with findings: %v\n", auditErr)
+			w("Audit completed with findings: %v\n", auditErr)
 		}
 	}
 
 	// Next steps.
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Next steps:")
-	fmt.Fprintln(out, "  governor audit <path>       — run a full security audit")
-	fmt.Fprintln(out, "  governor checks init        — scaffold a custom check")
-	fmt.Fprintln(out, "  governor checks list        — list available checks")
-	fmt.Fprintln(out, "  governor doctor             — verify installation health")
-	fmt.Fprintln(out, "")
+	wln("")
+	wln("Next steps:")
+	wln("  governor audit <path>       — run a full security audit")
+	wln("  governor checks init        — scaffold a custom check")
+	wln("  governor checks list        — list available checks")
+	wln("  governor doctor             — verify installation health")
+	wln("")
 
 	return nil
 }
@@ -4459,7 +4462,7 @@ func promptYN(scanner *bufio.Scanner, out io.Writer, prompt string, defaultYes b
 	if defaultYes {
 		hint = "[Y/n]"
 	}
-	fmt.Fprintf(out, "%s %s ", prompt, hint)
+	_, _ = fmt.Fprintf(out, "%s %s ", prompt, hint)
 
 	if !scanner.Scan() {
 		return defaultYes

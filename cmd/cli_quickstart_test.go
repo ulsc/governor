@@ -11,7 +11,9 @@ import (
 
 func TestQuickstartCreatesGovDir(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, ".git"), 0o700)
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	// Y to init, N to hook, N to AI, N to audit
 	input := "y\nn\nn\nn\n"
@@ -32,7 +34,9 @@ func TestQuickstartCreatesGovDir(t *testing.T) {
 
 func TestQuickstartSkipsInitWhenDeclined(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, ".git"), 0o700)
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	// N to init, N to hook, N to AI, N to audit
 	input := "n\nn\nn\nn\n"
@@ -50,7 +54,9 @@ func TestQuickstartSkipsInitWhenDeclined(t *testing.T) {
 
 func TestQuickstartInstallsHook(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, ".git", "hooks"), 0o700)
+	if err := os.MkdirAll(filepath.Join(dir, ".git", "hooks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	// Y to init, Y to hook, N to AI, N to audit
 	input := "y\ny\nn\nn\n"
