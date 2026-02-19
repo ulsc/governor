@@ -70,3 +70,66 @@ func TestFormatJSON_NilFindings(t *testing.T) {
 		t.Error("expected JSON array for nil findings")
 	}
 }
+
+func TestFormatHumanColorized_SortsBySeverity(t *testing.T) {
+	findings := []model.Finding{
+		{Title: "Low issue", Severity: "low"},
+		{Title: "Critical issue", Severity: "critical"},
+		{Title: "High issue", Severity: "high"},
+	}
+	out := FormatHumanColorized(findings, false)
+	critIdx := strings.Index(out, "Critical issue")
+	highIdx := strings.Index(out, "High issue")
+	lowIdx := strings.Index(out, "Low issue")
+	if critIdx < 0 || highIdx < 0 || lowIdx < 0 {
+		t.Fatalf("expected all findings in output, got:\n%s", out)
+	}
+	if critIdx > highIdx {
+		t.Errorf("critical should appear before high; critical at %d, high at %d", critIdx, highIdx)
+	}
+	if highIdx > lowIdx {
+		t.Errorf("high should appear before low; high at %d, low at %d", highIdx, lowIdx)
+	}
+}
+
+func TestFormatHumanColorized_SummaryHeader(t *testing.T) {
+	findings := []model.Finding{
+		{Title: "A", Severity: "critical"},
+		{Title: "B", Severity: "high"},
+		{Title: "C", Severity: "medium"},
+	}
+	out := FormatHumanColorized(findings, false)
+	if !strings.Contains(out, "3 findings") {
+		t.Errorf("expected '3 findings' in summary header, got:\n%s", out)
+	}
+	if !strings.Contains(out, "1 critical") {
+		t.Errorf("expected '1 critical' in summary header, got:\n%s", out)
+	}
+}
+
+func TestFormatHumanColorized_NoFindings(t *testing.T) {
+	out := FormatHumanColorized(nil, false)
+	if !strings.Contains(out, "No findings") {
+		t.Errorf("expected 'No findings' message, got: %s", out)
+	}
+}
+
+func TestFormatHumanColorized_VerboseIncludesEvidence(t *testing.T) {
+	findings := []model.Finding{
+		{
+			Title:    "Test finding",
+			Severity: "high",
+			Evidence: "some evidence text here",
+		},
+	}
+
+	verbose := FormatHumanColorized(findings, true)
+	if !strings.Contains(verbose, "some evidence text here") {
+		t.Errorf("verbose mode should include evidence, got:\n%s", verbose)
+	}
+
+	concise := FormatHumanColorized(findings, false)
+	if strings.Contains(concise, "some evidence text here") {
+		t.Errorf("non-verbose mode should not include evidence, got:\n%s", concise)
+	}
+}

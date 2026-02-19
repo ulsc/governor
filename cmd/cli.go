@@ -4120,6 +4120,8 @@ func runScan(args []string) error {
 			return marshalErr
 		}
 		fmt.Println(out)
+	} else if isInteractiveTerminal() {
+		fmt.Print(scan.FormatHumanColorized(result.Findings, false))
 	} else {
 		fmt.Print(scan.FormatHuman(result.Findings))
 	}
