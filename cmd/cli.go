@@ -267,6 +267,13 @@ func runAudit(args []string) error {
 		return err
 	}
 
+	// Auto-fall-back to quick (rule-only) mode when no AI is configured.
+	_, explicitQuick := setFlags["quick"]
+	autoQuick := shouldAutoQuick(explicitQuick, cfg, setFlags)
+	if autoQuick {
+		*quick = true
+	}
+
 	updateCh := update.CheckAsync()
 
 	selOpts := checks.AuditSelectionOptions{
@@ -428,11 +435,23 @@ func runAudit(args []string) error {
 		}
 	}
 	printAuditSummary(report, paths)
+	if autoQuick {
+		printAutoQuickHint(report.RunMetadata.RuleChecks)
+	}
 	update.PrintNotice(<-updateCh)
 	if err := checkPolicyDecision(report.PolicyDecision); err != nil {
 		return err
 	}
 	return checkFailOn(*failOn, report)
+}
+
+func printAutoQuickHint(ruleChecks int) {
+	fmt.Fprintf(os.Stderr, "\n%d rule-engine checks completed (no AI key needed)\n", ruleChecks)
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Want deeper analysis? Add an AI profile:")
+	fmt.Fprintln(os.Stderr, "  governor init --ai-profile openai")
+	fmt.Fprintln(os.Stderr, "  export OPENAI_API_KEY=sk-...")
+	fmt.Fprintln(os.Stderr, "  governor audit .")
 }
 
 func runIsolate(args []string) error {
@@ -2523,6 +2542,45 @@ func isInteractiveTerminal() bool {
 	return isatty.IsTerminal(os.Stdout.Fd()) &&
 		isatty.IsTerminal(os.Stderr.Fd()) &&
 		isatty.IsTerminal(os.Stdin.Fd())
+}
+
+// shouldAutoQuick returns true when no AI configuration exists, meaning the
+// user has neither set any AI-related CLI flags nor provided AI settings in a
+// config file. When true the audit should automatically fall back to quick
+// (rule-engine only) mode.
+func shouldAutoQuick(explicitQuick bool, cfg config.Config, setFlags map[string]struct{}) bool {
+	if explicitQuick {
+		return false
+	}
+
+	// AI-related CLI flag names.
+	aiFlags := []string{
+		"ai-profile",
+		"ai-provider",
+		"ai-model",
+		"ai-auth-mode",
+		"ai-base-url",
+		"ai-api-key-env",
+		"ai-bin",
+	}
+	for _, name := range aiFlags {
+		if _, ok := setFlags[name]; ok {
+			return false
+		}
+	}
+
+	// AI-related config fields.
+	if cfg.AIProfile != "" ||
+		cfg.AIProvider != "" ||
+		cfg.AIModel != "" ||
+		cfg.AIAuthMode != "" ||
+		cfg.AIBaseURL != "" ||
+		cfg.AIAPIKeyEnv != "" ||
+		cfg.AIBin != "" {
+		return false
+	}
+
+	return true
 }
 
 func runClear(args []string) error {
