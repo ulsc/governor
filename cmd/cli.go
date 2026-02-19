@@ -438,6 +438,10 @@ func runAudit(args []string) error {
 			return err
 		}
 	}
+	detected := detect.Project(positionalInput)
+	if detected.Label != "" {
+		fmt.Printf("detected:       %s\n", detected.Label)
+	}
 	printAuditSummary(report, paths)
 	if autoQuick {
 		printAutoQuickHint(report.RunMetadata.RuleChecks)
