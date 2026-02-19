@@ -6,6 +6,10 @@ All notable changes to Governor are documented here.
 
 ### Added
 
+- **`governor quickstart` wizard** — interactive guided setup that detects project type, initializes `.governor/`, installs pre-commit hook, shows AI setup instructions, and runs first audit in ~30 seconds
+- **Zero-config audit** — `governor audit .` works immediately without any configuration; automatically falls back to rule-engine checks when no AI provider is configured, with a hint to set up AI for deeper analysis
+- **Project auto-detection** — identifies 11 project types (Next.js, Express, Go, FastAPI, Django, Rust, etc.) from marker files; displayed in audit output and quickstart wizard
+- **Color-coded terminal output** — `governor scan` now shows severity-sorted, color-coded findings in interactive terminals (critical=red bg, high=red, medium=yellow, low/info=faint) with a summary header
 - **SQL injection rule check** with 7 language detectors (JS/TS, Python, Go, Java, Ruby, PHP)
 - **XSS and CSRF AI checks** for cross-site scripting and request forgery detection
 - **CWE and OWASP references** on all builtin checks, rendered as links in reports
