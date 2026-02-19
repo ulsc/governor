@@ -32,6 +32,7 @@ Disclaimer note:
 - [How It Works](#how-it-works)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
+- [Quickstart Command](#quickstart-command)
 - [Init Command](#init-command)
 - [CI/CD](#cicd)
 - [Audit Command](#audit-command)
@@ -89,25 +90,41 @@ Governor is built for organizations that receive many source folders/zips and ne
 # 1) Install
 curl -fsSL https://governor.sh/install.sh | bash
 
-# 2) Verify
-governor version
+# 2) Run your first audit (works immediately, no config needed)
+governor audit .
+```
 
-# 3) Initialize the .governor/ workspace
+That's it. Governor auto-detects that no AI provider is configured and runs all rule-engine checks (hardcoded credentials, command injection, prompt injection, etc.) instantly. No API keys, no setup.
+
+### Guided setup (optional)
+
+For a complete interactive setup in ~30 seconds:
+
+```bash
+governor quickstart
+```
+
+This walks you through project detection, `.governor/` initialization, pre-commit hook installation, optional AI configuration, and your first audit.
+
+### Full workflow
+
+```bash
+# Initialize the .governor/ workspace
 governor init
 
-# 4) Run audit on a folder
+# Run audit on a folder
 governor audit /path/to/app
 
-# 5) Initialize a draft custom check from a template
+# Initialize a draft custom check from a template
 governor checks init \
   --id authz-missing-role-check \
   --template authz-missing-checks \
   --name "Missing role checks"
 
-# 6) Enable it
+# Enable it
 governor checks enable authz-missing-role-check
 
-# 7) Re-run audit with built-ins + enabled custom checks
+# Re-run audit with built-ins + enabled custom checks
 governor audit /path/to/app
 ```
 
@@ -170,6 +187,40 @@ Default install path:
 ```text
 ~/.local/bin/governor
 ```
+
+## Quickstart Command
+
+```bash
+governor quickstart
+```
+
+Interactive guided setup wizard for new users. Completes in about 30 seconds.
+
+The wizard:
+
+1. **Detects project type** — automatically identifies Next.js, Express, Go, FastAPI, Django, Rust, and other project types from marker files.
+2. **Initializes `.governor/`** — creates config, gitignore, and checks directory. `[Y/n]`
+3. **Installs pre-commit hook** — adds a git hook that runs `governor audit --staged --quick --fail-on high` before every commit. Only offered when `.git/` exists. `[Y/n]`
+4. **AI setup instructions** — shows provider-specific instructions for Codex, OpenAI, or Claude. `[y/N]`
+5. **Runs first audit** — executes `governor audit --quick` for instant rule-engine results. `[Y/n]`
+
+Each step is a Y/n prompt. Press Enter to accept the default (shown in uppercase).
+
+### Supported project types
+
+| Type | Detection signal |
+|------|-----------------|
+| Next.js | `next.config.{js,mjs,ts}` |
+| Supabase | `supabase/config.toml` |
+| Express | `express` in `package.json` deps |
+| Fastify | `fastify` in `package.json` deps |
+| FastAPI | `fastapi` in `requirements.txt` |
+| Flask | `flask` in `requirements.txt` |
+| Django | `django` in `requirements.txt` |
+| Go | `go.mod` |
+| Rust | `Cargo.toml` |
+| Node.js | `package.json` (fallback) |
+| Python | `requirements.txt` / `pyproject.toml` / `setup.py` (fallback) |
 
 ## Init Command
 
@@ -299,10 +350,14 @@ governor audit <path-or-zip> [flags]
 Notes:
 - `--quick` and AI flags (`--ai-profile`, etc.) are mutually exclusive.
 - `--changed-only`, `--changed-since`, and `--staged` are mutually exclusive. All three require a git repository.
+- **Auto-quick:** When no AI configuration is present (no AI flags, no `ai_profile` in config), Governor automatically falls back to `--quick` mode and prints a hint showing how to enable AI checks.
 
 ### Examples
 
 ```bash
+# Zero-config — works immediately, auto-detects no AI and runs rule checks
+governor audit .
+
 # Built-ins only
 governor audit ./my-app --no-custom-checks
 
@@ -736,6 +791,7 @@ Notes:
 - Only accepts files, not directories. Use `governor audit` for directory scanning.
 - Runs only `engine: rule` checks (deterministic, no AI, no network).
 - Default exit code: 0 = no findings, 1 = findings exist (or `--fail-on` threshold met).
+- In interactive terminals, output is color-coded and sorted by severity (critical first). In piped/redirected output, plain text is used.
 
 ## Diff Command
 
