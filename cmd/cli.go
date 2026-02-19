@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"governor/internal/checks"
 	"governor/internal/checkstui"
 	"governor/internal/comment"
+	"governor/internal/detect"
 	"governor/internal/config"
 	"governor/internal/diff"
 	"governor/internal/doctor"
@@ -74,6 +76,8 @@ func Execute(args []string) error {
 		return runPolicy(args[1:])
 	case "init":
 		return runInit(args[1:])
+	case "quickstart":
+		return runQuickstart(args[1:])
 	case "clear":
 		return runClear(args[1:])
 	case "doctor":
@@ -3680,6 +3684,7 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  governor version")
 	fmt.Println("  governor init [flags]")
+	fmt.Println("  governor quickstart              — guided setup wizard")
 	fmt.Println("  governor audit <path-or-zip> [flags]")
 	fmt.Println("  governor doctor [flags]")
 	fmt.Println("  governor matrix run [flags]")
@@ -4333,5 +4338,197 @@ func runBadge(args []string) error {
 	}
 
 	fmt.Printf("badge: %s (grade %s) -> %s\n", *label, grade, outputPath)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// quickstart — interactive guided setup wizard
+// ---------------------------------------------------------------------------
+
+func runQuickstart(args []string) error {
+	fs := flag.NewFlagSet("quickstart", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return runQuickstartWithIO(".", os.Stdin, os.Stderr)
+}
+
+func runQuickstartWithIO(root string, in io.Reader, out io.Writer) error {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve root path: %w", err)
+	}
+
+	scanner := bufio.NewScanner(in)
+
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Welcome to Governor — security auditing for AI-generated code.")
+	fmt.Fprintln(out, "")
+
+	// Detect project type.
+	proj := detect.Project(absRoot)
+	if proj.Type != "" {
+		fmt.Fprintf(out, "Detected project type: %s\n", proj.Label)
+	} else {
+		fmt.Fprintln(out, "Project type: unknown")
+	}
+	fmt.Fprintln(out, "")
+
+	// Prompt 1: Initialize .governor directory.
+	initDir := promptYN(scanner, out, "Initialize .governor directory?", true)
+	if initDir {
+		if err := initGovDir(absRoot, ""); err != nil {
+			return fmt.Errorf("initialize .governor: %w", err)
+		}
+		fmt.Fprintln(out, "  created .governor/config.yaml")
+		fmt.Fprintln(out, "  created .governor/.gitignore")
+		fmt.Fprintln(out, "  created .governor/checks/")
+		fmt.Fprintln(out, "")
+	}
+
+	// Prompt 2: Install pre-commit hook (only if .git exists).
+	gitDir := filepath.Join(absRoot, ".git")
+	if _, statErr := os.Stat(gitDir); statErr == nil {
+		installHook := promptYN(scanner, out, "Install pre-commit hook?", true)
+		if installHook {
+			hooksDir := filepath.Join(gitDir, "hooks")
+			if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+				return fmt.Errorf("create hooks directory: %w", err)
+			}
+			hookPath := filepath.Join(hooksDir, "pre-commit")
+			if err := os.WriteFile(hookPath, []byte(hookScript), 0o755); err != nil {
+				return fmt.Errorf("write pre-commit hook: %w", err)
+			}
+			fmt.Fprintf(out, "  installed pre-commit hook at %s\n", hookPath)
+			fmt.Fprintln(out, "")
+		}
+	}
+
+	// Prompt 3: Set up AI-powered checks.
+	setupAI := promptYN(scanner, out, "Set up AI-powered checks?", false)
+	if setupAI {
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "To use AI-powered checks, configure an AI provider:")
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  Option 1 — Codex CLI (default):")
+		fmt.Fprintln(out, "    Install: npm install -g @openai/codex")
+		fmt.Fprintln(out, "    Set:     export OPENAI_API_KEY=<your-key>")
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  Option 2 — OpenAI-compatible API:")
+		fmt.Fprintln(out, "    governor init --ai-profile openai")
+		fmt.Fprintln(out, "    Set:     export OPENAI_API_KEY=<your-key>")
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "  Option 3 — Claude:")
+		fmt.Fprintln(out, "    governor init --ai-profile claude")
+		fmt.Fprintln(out, "    Set:     export ANTHROPIC_API_KEY=<your-key>")
+		fmt.Fprintln(out, "")
+	}
+
+	// Prompt 4: Run first audit.
+	runNow := promptYN(scanner, out, "Run your first audit now?", true)
+	if runNow {
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "Running: governor audit --quick ...")
+		fmt.Fprintln(out, "")
+		if auditErr := runAudit([]string{absRoot, "--quick"}); auditErr != nil {
+			fmt.Fprintf(out, "Audit completed with findings: %v\n", auditErr)
+		}
+	}
+
+	// Next steps.
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Next steps:")
+	fmt.Fprintln(out, "  governor audit <path>       — run a full security audit")
+	fmt.Fprintln(out, "  governor checks init        — scaffold a custom check")
+	fmt.Fprintln(out, "  governor checks list        — list available checks")
+	fmt.Fprintln(out, "  governor doctor             — verify installation health")
+	fmt.Fprintln(out, "")
+
+	return nil
+}
+
+// promptYN displays a yes/no prompt and returns the user's choice.
+// defaultYes controls the default when the user presses enter without typing.
+func promptYN(scanner *bufio.Scanner, out io.Writer, prompt string, defaultYes bool) bool {
+	hint := "[y/N]"
+	if defaultYes {
+		hint = "[Y/n]"
+	}
+	fmt.Fprintf(out, "%s %s ", prompt, hint)
+
+	if !scanner.Scan() {
+		return defaultYes
+	}
+	answer := strings.TrimSpace(scanner.Text())
+	if answer == "" {
+		return defaultYes
+	}
+
+	switch strings.ToLower(answer) {
+	case "y", "yes":
+		return true
+	case "n", "no":
+		return false
+	default:
+		return false
+	}
+}
+
+// initGovDir creates the .governor directory structure with config.yaml,
+// .gitignore, and an empty checks/ subdirectory. If aiProfile is non-empty
+// the ai_profile line in config.yaml is uncommented and set.
+func initGovDir(root string, aiProfile string) error {
+	govDir := filepath.Join(root, ".governor")
+	checksDir := filepath.Join(govDir, "checks")
+	gitignorePath := filepath.Join(govDir, ".gitignore")
+	configPath := filepath.Join(govDir, "config.yaml")
+
+	if err := os.MkdirAll(checksDir, 0o700); err != nil {
+		return fmt.Errorf("create directory %s: %w", checksDir, err)
+	}
+
+	gitignoreContent := `# Keep this file and repo-local checks.
+*
+!.gitignore
+!checks/
+!checks/**
+!suppressions.yaml
+!baseline.json
+!config.yaml
+
+# Always ignore generated run artifacts.
+runs/
+`
+
+	configContent := `# Governor configuration
+# Docs: https://github.com/anthropics/governor
+#
+# Values here override global (~/.governor/config.yaml) settings.
+# CLI flags override both.
+
+# ai_profile: codex
+# ai_provider: codex-cli
+# ai_model:
+# workers: 3
+# execution_mode: sandboxed
+# ai_sandbox: read-only
+# fail_on:
+# timeout: 4m
+# verbose: false
+`
+
+	if strings.TrimSpace(aiProfile) != "" {
+		configContent = strings.Replace(configContent, "# ai_profile: codex", "ai_profile: "+strings.TrimSpace(aiProfile), 1)
+	}
+
+	if err := os.WriteFile(gitignorePath, []byte(gitignoreContent), 0o600); err != nil {
+		return fmt.Errorf("write .gitignore: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		return fmt.Errorf("write config.yaml: %w", err)
+	}
+
 	return nil
 }
