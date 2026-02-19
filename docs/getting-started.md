@@ -6,10 +6,11 @@ This guide walks you through installation, your first audit, and understanding t
 
 ## Prerequisites
 
-- **An AI provider** configured (for AI-powered checks) -- see [Configuration](./configuration.md) for details
-- `codex` CLI in your `PATH` if using the default `codex-cli` provider
+- **No prerequisites for rule-based checks.** Governor works out of the box — just install and run.
+- **An AI provider** is needed only for AI-powered checks — see [Configuration](./configuration.md) for details.
+- `codex` CLI in your `PATH` if using the `codex-cli` provider.
 
-> Rule-based checks (hardcoded credentials, command injection patterns, etc.) run without any AI provider and work fully offline.
+> **Zero-config ready:** You can run `governor audit .` immediately after installation. When no AI provider is configured, Governor automatically falls back to rule-engine checks (hardcoded credentials, command injection, prompt injection, etc.) — no API keys, no network, no setup required.
 
 ## Installation
 
@@ -59,7 +60,27 @@ You should see the installed version (e.g. `governor v0.1.0`). You can also run 
 
 ## Your First Audit
 
-### 1. Initialize the workspace (optional)
+### Option A: Quickstart wizard (recommended for new users)
+
+The fastest way to get started is the interactive quickstart wizard:
+
+```bash
+governor quickstart
+```
+
+The wizard walks you through four steps in about 30 seconds:
+
+1. **Detects your project type** (Next.js, Express, Go, Python, etc.) automatically
+2. **Initializes `.governor/`** directory with config, gitignore, and checks folder
+3. **Installs a pre-commit hook** (if you're in a git repository) that runs quick audits on staged files before every commit
+4. **Optionally sets up AI** with step-by-step instructions for Codex, OpenAI, or Claude
+5. **Runs your first audit** immediately with `--quick` (rule-engine only, instant results)
+
+Each step is a Y/n prompt with sensible defaults — press Enter to accept.
+
+### Option B: Manual setup
+
+#### 1. Initialize the workspace (optional)
 
 Run `governor init` inside your repository to scaffold the `.governor/` directory:
 
@@ -80,7 +101,7 @@ If you want to set an AI profile at init time:
 governor init --ai-profile openai
 ```
 
-### 2. Run an audit
+#### 2. Run an audit
 
 Point Governor at any source folder or `.zip` archive:
 
@@ -95,7 +116,7 @@ That's it. Governor will:
 3. **Execute** checks in parallel (up to 3 workers by default).
 4. **Generate reports** with deduplicated findings.
 
-### 3. Watch progress
+#### 3. Watch progress
 
 If you're running in an interactive terminal, Governor displays a live TUI showing worker status, durations, and events. In non-interactive environments (CI, pipes), it falls back to plain log output.
 
@@ -109,7 +130,7 @@ governor audit ./my-app --tui
 governor audit ./my-app --no-tui
 ```
 
-### 4. Review the summary
+#### 4. Review the summary
 
 When the audit completes, Governor prints a summary to stdout:
 
@@ -219,6 +240,28 @@ This runs all `engine: rule` checks (both built-in and custom) and typically com
 - Local development feedback loops
 - Environments without AI provider access
 - Pre-commit hooks (see [Hooks](#pre-commit-hook) below)
+
+### Automatic quick mode
+
+When you run `governor audit` without any AI configuration (no `--ai-profile`, no `ai_profile` in config, no API key environment variables), Governor **automatically falls back to quick mode**. This means new users get useful results immediately:
+
+```bash
+# No config needed — auto-detects absence of AI and runs rule checks
+governor audit .
+```
+
+After the audit, Governor prints a hint showing how to enable AI-powered checks:
+
+```
+5 rule-engine checks completed (no AI key needed)
+
+Want deeper analysis? Add an AI profile:
+  governor init --ai-profile openai
+  export OPENAI_API_KEY=sk-...
+  governor audit .
+```
+
+This auto-quick behavior only activates when no AI settings are present anywhere — CLI flags, repo-local config, or global config. Once you configure an AI profile, `governor audit` uses the full check suite.
 
 You can also select individual rule checks explicitly:
 
@@ -357,6 +400,32 @@ fixtures/
 ```
 
 Governor auto-detects `.governorignore` in the input root. Patterns follow gitignore syntax including negation (`!pattern`) and directory-only matching (`dir/`). See the [Ignore File](../README.md#ignore-file) section for full syntax.
+
+## Project Auto-Detection
+
+Governor automatically detects your project type and displays it in audit output. Detection is based on well-known marker files:
+
+| Detected Type | Signal |
+|---------------|--------|
+| Next.js | `next.config.js`, `.mjs`, or `.ts` |
+| Supabase | `supabase/config.toml` |
+| Express | `express` in `package.json` dependencies |
+| Fastify | `fastify` in `package.json` dependencies |
+| FastAPI | `fastapi` in `requirements.txt` |
+| Flask | `flask` in `requirements.txt` |
+| Django | `django` in `requirements.txt` |
+| Go | `go.mod` |
+| Rust | `Cargo.toml` |
+| Node.js | `package.json` (fallback) |
+| Python | `requirements.txt`, `pyproject.toml`, or `setup.py` (fallback) |
+
+Detection is checked in priority order — the first match wins. For example, a project with both `next.config.js` and `package.json` is detected as Next.js, not generic Node.js.
+
+The detected type appears in audit output:
+
+```
+detected:       Next.js
+```
 
 ## Next Steps
 
