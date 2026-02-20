@@ -22,11 +22,12 @@ import (
 	"governor/internal/checks"
 	"governor/internal/checkstui"
 	"governor/internal/comment"
-	"governor/internal/detect"
 	"governor/internal/config"
+	"governor/internal/detect"
 	"governor/internal/diff"
 	"governor/internal/doctor"
 	"governor/internal/extractor"
+	"governor/internal/fix"
 	"governor/internal/intake"
 	"governor/internal/isolation"
 	"governor/internal/matrix"
@@ -68,6 +69,8 @@ func Execute(args []string) error {
 		return runDiff(args[1:])
 	case "scan":
 		return runScan(args[1:])
+	case "fix":
+		return runFix(args[1:])
 	case "badge":
 		return runBadge(args[1:])
 	case "matrix":
@@ -100,6 +103,10 @@ func runAudit(args []string) error {
 
 	out := fs.String("out", "", "Output directory for run artifacts (default ./.governor/runs/<timestamp>)")
 	failOn := fs.String("fail-on", "", "Exit non-zero if any finding meets or exceeds severity: critical|high|medium|low|info")
+	failOnExploitability := fs.String("fail-on-exploitability", "", "Exit non-zero if any finding meets or exceeds exploitability: confirmed-path|reachable|theoretical")
+	maxNewReachable := fs.Int("max-new-reachable", -1, "Exit non-zero if reachable/confirmed-path new findings exceed this count (-1 disables)")
+	minConfidenceForBlock := fs.Float64("min-confidence-for-block", -1, "Only block on findings with confidence >= threshold (0.0-1.0, default -1 disables)")
+	requireAttackPathForBlocking := fs.Bool("require-attack-path-for-blocking", false, "Only block findings that include non-empty attack_path")
 	baseline := fs.String("baseline", "", "Path to a previous audit.json for diff comparison")
 	workers := fs.Int("workers", 3, "Max concurrent worker processes (1-3)")
 	aiProfile := fs.String("ai-profile", "codex", "AI profile name (default codex)")
@@ -250,6 +257,12 @@ func runAudit(args []string) error {
 	if *maxRuleFileBytes < 0 || (*maxRuleFileBytes > 0 && *maxRuleFileBytes > worker.MaxAllowedRuleFileBytes) {
 		return fmt.Errorf("--max-rule-file-bytes must be between 0 and %d", worker.MaxAllowedRuleFileBytes)
 	}
+	if *maxNewReachable < -1 {
+		return errors.New("--max-new-reachable must be >= -1")
+	}
+	if *minConfidenceForBlock != -1 && (*minConfidenceForBlock < 0 || *minConfidenceForBlock > 1) {
+		return errors.New("--min-confidence-for-block must be between 0.0 and 1.0 (or -1 to disable)")
+	}
 	if *enableTUI && *disableTUI {
 		return errors.New("cannot set both --tui and --no-tui")
 	}
@@ -393,14 +406,14 @@ func runAudit(args []string) error {
 		if result.err != nil {
 			return result.err
 		}
-		if hasPolicy {
-			var diffReport *diff.DiffReport
-			if result.paths.DiffPath != "" {
-				diffReport, err = loadDiffReport(result.paths.DiffPath)
-				if err != nil {
-					return err
-				}
+		var diffReport *diff.DiffReport
+		if result.paths.DiffPath != "" {
+			diffReport, err = loadDiffReport(result.paths.DiffPath)
+			if err != nil {
+				return err
 			}
+		}
+		if hasPolicy {
 			decision := policy.Evaluate(resolvedPolicyPath, loadedPolicy, result.report, diffReport)
 			result.report.PolicyDecision = &decision
 			result.report.RunMetadata.PolicyPath = resolvedPolicyPath
@@ -414,7 +427,13 @@ func runAudit(args []string) error {
 		if err := checkPolicyDecision(result.report.PolicyDecision); err != nil {
 			return err
 		}
-		return checkFailOn(*failOn, result.report)
+		return checkRiskGates(result.report, diffReport, riskGateOptions{
+			FailOnSeverity:               *failOn,
+			FailOnExploitability:         *failOnExploitability,
+			MaxNewReachable:              *maxNewReachable,
+			MinConfidenceForBlock:        *minConfidenceForBlock,
+			RequireAttackPathForBlocking: *requireAttackPathForBlocking,
+		})
 	}
 
 	auditOpts.Progress = progress.NewPlainSink(os.Stderr)
@@ -422,14 +441,14 @@ func runAudit(args []string) error {
 	if err != nil {
 		return err
 	}
-	if hasPolicy {
-		var diffReport *diff.DiffReport
-		if paths.DiffPath != "" {
-			diffReport, err = loadDiffReport(paths.DiffPath)
-			if err != nil {
-				return err
-			}
+	var diffReport *diff.DiffReport
+	if paths.DiffPath != "" {
+		diffReport, err = loadDiffReport(paths.DiffPath)
+		if err != nil {
+			return err
 		}
+	}
+	if hasPolicy {
 		decision := policy.Evaluate(resolvedPolicyPath, loadedPolicy, report, diffReport)
 		report.PolicyDecision = &decision
 		report.RunMetadata.PolicyPath = resolvedPolicyPath
@@ -450,7 +469,13 @@ func runAudit(args []string) error {
 	if err := checkPolicyDecision(report.PolicyDecision); err != nil {
 		return err
 	}
-	return checkFailOn(*failOn, report)
+	return checkRiskGates(report, diffReport, riskGateOptions{
+		FailOnSeverity:               *failOn,
+		FailOnExploitability:         *failOnExploitability,
+		MaxNewReachable:              *maxNewReachable,
+		MinConfidenceForBlock:        *minConfidenceForBlock,
+		RequireAttackPathForBlocking: *requireAttackPathForBlocking,
+	})
 }
 
 func printAutoQuickHint(ruleChecks int) {
@@ -768,6 +793,31 @@ func checkSuppressionRatioCI(maxRatio float64, report model.AuditReport) error {
 }
 
 func checkFailOn(threshold string, report model.AuditReport) error {
+	return checkFailOnWithFilters(threshold, report, -1, false)
+}
+
+type riskGateOptions struct {
+	FailOnSeverity               string
+	FailOnExploitability         string
+	MaxNewReachable              int
+	MinConfidenceForBlock        float64
+	RequireAttackPathForBlocking bool
+}
+
+func checkRiskGates(report model.AuditReport, dr *diff.DiffReport, opts riskGateOptions) error {
+	if err := checkFailOnWithFilters(opts.FailOnSeverity, report, opts.MinConfidenceForBlock, opts.RequireAttackPathForBlocking); err != nil {
+		return err
+	}
+	if err := checkFailOnExploitability(opts.FailOnExploitability, report, opts.MinConfidenceForBlock, opts.RequireAttackPathForBlocking); err != nil {
+		return err
+	}
+	if err := checkMaxNewReachable(opts.MaxNewReachable, report, dr, opts.MinConfidenceForBlock, opts.RequireAttackPathForBlocking); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkFailOnWithFilters(threshold string, report model.AuditReport, minConfidence float64, requireAttackPath bool) error {
 	threshold = strings.ToLower(strings.TrimSpace(threshold))
 	if threshold == "" {
 		return nil
@@ -776,14 +826,21 @@ func checkFailOn(threshold string, report model.AuditReport) error {
 	if !ok {
 		return fmt.Errorf("invalid --fail-on severity %q (expected critical, high, medium, low, or info)", threshold)
 	}
+	filtered := filterBlockingCandidates(report.Findings, minConfidence, requireAttackPath)
+	if len(filtered) == 0 {
+		return nil
+	}
 	for _, f := range report.Findings {
+		if !isBlockingCandidate(f, minConfidence, requireAttackPath) {
+			continue
+		}
 		w, exists := severityWeightMap[strings.ToLower(strings.TrimSpace(f.Severity))]
 		if !exists {
 			w = severityWeightMap["info"]
 		}
 		if w <= thresholdWeight {
 			return fmt.Errorf("findings exceed --fail-on threshold %q (%d finding(s) at or above %s severity)",
-				threshold, countAtOrAbove(report.Findings, thresholdWeight), threshold)
+				threshold, countAtOrAbove(filtered, thresholdWeight), threshold)
 		}
 	}
 	return nil
@@ -795,6 +852,60 @@ var severityWeightMap = map[string]int{
 	"medium":   2,
 	"low":      3,
 	"info":     4,
+}
+
+var exploitabilityWeightMap = map[string]int{
+	"confirmed-path": 0,
+	"reachable":      1,
+	"theoretical":    2,
+}
+
+func checkFailOnExploitability(threshold string, report model.AuditReport, minConfidence float64, requireAttackPath bool) error {
+	threshold = strings.ToLower(strings.TrimSpace(threshold))
+	if threshold == "" || threshold == "none" {
+		return nil
+	}
+	thresholdWeight, ok := exploitabilityWeightMap[threshold]
+	if !ok {
+		return fmt.Errorf("invalid --fail-on-exploitability %q (expected confirmed-path, reachable, or theoretical)", threshold)
+	}
+	filtered := filterBlockingCandidates(report.Findings, minConfidence, requireAttackPath)
+	if len(filtered) == 0 {
+		return nil
+	}
+	count := 0
+	for _, finding := range filtered {
+		if exploitabilityWeight(finding.Exploitability) <= thresholdWeight {
+			count++
+		}
+	}
+	if count > 0 {
+		return fmt.Errorf("findings exceed --fail-on-exploitability threshold %q (%d finding(s) at or above %s)", threshold, count, threshold)
+	}
+	return nil
+}
+
+func checkMaxNewReachable(maxNewReachable int, report model.AuditReport, dr *diff.DiffReport, minConfidence float64, requireAttackPath bool) error {
+	if maxNewReachable < 0 {
+		return nil
+	}
+	candidates := report.Findings
+	scope := "active findings"
+	if dr != nil {
+		candidates = dr.New
+		scope = "new findings"
+	}
+	filtered := filterBlockingCandidates(candidates, minConfidence, requireAttackPath)
+	reachable := 0
+	for _, finding := range filtered {
+		if exploitabilityWeight(finding.Exploitability) <= exploitabilityWeightMap["reachable"] {
+			reachable++
+		}
+	}
+	if reachable > maxNewReachable {
+		return fmt.Errorf("reachable %s %d exceed --max-new-reachable %d", scope, reachable, maxNewReachable)
+	}
+	return nil
 }
 
 func countAtOrAbove(findings []model.Finding, thresholdWeight int) int {
@@ -826,6 +937,42 @@ func countAtOrAboveCounts(counts map[string]int, thresholdWeight int) int {
 		}
 	}
 	return total
+}
+
+func filterBlockingCandidates(findings []model.Finding, minConfidence float64, requireAttackPath bool) []model.Finding {
+	if len(findings) == 0 {
+		return nil
+	}
+	out := make([]model.Finding, 0, len(findings))
+	for _, finding := range findings {
+		if isBlockingCandidate(finding, minConfidence, requireAttackPath) {
+			out = append(out, finding)
+		}
+	}
+	return out
+}
+
+func isBlockingCandidate(finding model.Finding, minConfidence float64, requireAttackPath bool) bool {
+	if minConfidence >= 0 && finding.Confidence < minConfidence {
+		return false
+	}
+	if requireAttackPath {
+		for _, step := range finding.AttackPath {
+			if strings.TrimSpace(step) != "" {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+func exploitabilityWeight(value string) int {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if weight, ok := exploitabilityWeightMap[normalized]; ok {
+		return weight
+	}
+	return len(exploitabilityWeightMap)
 }
 
 func runChecks(args []string) error {
@@ -2772,11 +2919,21 @@ func runPolicyExplain(args []string) error {
 	fmt.Printf("api_version: %s\n", p.APIVersion)
 	fmt.Printf("defaults:\n")
 	fmt.Printf("  fail_on_severity: %s\n", fallback(p.Defaults.FailOnSeverity, "none"))
+	fmt.Printf("  fail_on_exploitability: %s\n", fallback(p.Defaults.FailOnExploitability, "none"))
 	if p.Defaults.MaxSuppressionRatio != nil {
 		fmt.Printf("  max_suppression_ratio: %.2f\n", *p.Defaults.MaxSuppressionRatio)
 	}
 	if p.Defaults.MaxNewFindings != nil {
 		fmt.Printf("  max_new_findings: %d\n", *p.Defaults.MaxNewFindings)
+	}
+	if p.Defaults.MaxNewReachableFindings != nil {
+		fmt.Printf("  max_new_reachable_findings: %d\n", *p.Defaults.MaxNewReachableFindings)
+	}
+	if p.Defaults.MinConfidenceForBlock != nil {
+		fmt.Printf("  min_confidence_for_block: %.2f\n", *p.Defaults.MinConfidenceForBlock)
+	}
+	if p.Defaults.RequireAttackPathForBlocking != nil {
+		fmt.Printf("  require_attack_path_for_blocking: %t\n", *p.Defaults.RequireAttackPathForBlocking)
 	}
 	fmt.Printf("  require_checks: %s\n", strings.Join(p.Defaults.RequireChecks, ", "))
 	fmt.Printf("  forbid_checks: %s\n", strings.Join(p.Defaults.ForbidChecks, ", "))
@@ -3142,6 +3299,10 @@ func runCI(args []string) error {
 	fs.SetOutput(flag.CommandLine.Output())
 
 	failOn := fs.String("fail-on", "high", "Exit non-zero if any new finding meets or exceeds severity: critical|high|medium|low|info")
+	failOnExploitability := fs.String("fail-on-exploitability", "", "Exit non-zero if any finding meets or exceeds exploitability: confirmed-path|reachable|theoretical")
+	maxNewReachable := fs.Int("max-new-reachable", -1, "Exit non-zero if reachable/confirmed-path new findings exceed this count (-1 disables)")
+	minConfidenceForBlock := fs.Float64("min-confidence-for-block", -1, "Only block on findings with confidence >= threshold (0.0-1.0, default -1 disables)")
+	requireAttackPathForBlocking := fs.Bool("require-attack-path-for-blocking", false, "Only block findings that include non-empty attack_path")
 	commentFile := fs.String("comment-file", "", "Write PR comment markdown to file")
 	updateBaseline := fs.Bool("update-baseline", false, "Write findings as baseline after audit")
 	baselineFile := fs.String("baseline-file", ".governor/baseline.json", "Baseline file path")
@@ -3207,6 +3368,12 @@ func runCI(args []string) error {
 	}
 	if *maxRuleFileBytes < 0 || (*maxRuleFileBytes > 0 && *maxRuleFileBytes > worker.MaxAllowedRuleFileBytes) {
 		return fmt.Errorf("--max-rule-file-bytes must be between 0 and %d", worker.MaxAllowedRuleFileBytes)
+	}
+	if *maxNewReachable < -1 {
+		return errors.New("--max-new-reachable must be >= -1")
+	}
+	if *minConfidenceForBlock != -1 && (*minConfidenceForBlock < 0 || *minConfidenceForBlock > 1) {
+		return errors.New("--min-confidence-for-block must be between 0.0 and 1.0 (or -1 to disable)")
 	}
 
 	modeValue, err := normalizeExecutionModeFlag(*executionMode)
@@ -3317,14 +3484,14 @@ func runCI(args []string) error {
 	if err != nil {
 		os.Exit(2)
 	}
-	if hasPolicy {
-		var diffReport *diff.DiffReport
-		if paths.DiffPath != "" {
-			diffReport, err = loadDiffReport(paths.DiffPath)
-			if err != nil {
-				return err
-			}
+	var diffReport *diff.DiffReport
+	if paths.DiffPath != "" {
+		diffReport, err = loadDiffReport(paths.DiffPath)
+		if err != nil {
+			return err
 		}
+	}
+	if hasPolicy {
 		decision := policy.Evaluate(resolvedPolicyPath, loadedPolicy, report, diffReport)
 		report.PolicyDecision = &decision
 		report.RunMetadata.PolicyPath = resolvedPolicyPath
@@ -3371,9 +3538,15 @@ func runCI(args []string) error {
 	}
 
 	// CI exit codes: 0=pass, 1=findings exceed threshold, 2=audit error (handled above).
-	failErr := checkFailOn(*failOn, report)
-	if failErr != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", failErr)
+	riskErr := checkRiskGates(report, diffReport, riskGateOptions{
+		FailOnSeverity:               *failOn,
+		FailOnExploitability:         *failOnExploitability,
+		MaxNewReachable:              *maxNewReachable,
+		MinConfidenceForBlock:        *minConfidenceForBlock,
+		RequireAttackPathForBlocking: *requireAttackPathForBlocking,
+	})
+	if riskErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", riskErr)
 		os.Exit(1)
 	}
 	if ratioErr := checkSuppressionRatioCI(*maxSuppressionRatio, report); ratioErr != nil {
@@ -3707,6 +3880,7 @@ func printUsage() {
 	fmt.Println("  governor hooks <install|remove|status>")
 	fmt.Println("  governor diff <old.json> <new.json> [flags]")
 	fmt.Println("  governor scan <file...> [flags]")
+	fmt.Println("  governor fix <audit.json> [flags]")
 	fmt.Println("  governor badge <audit.json> [flags]")
 	fmt.Println("  governor clear [--without-last [N]]")
 	fmt.Println("")
@@ -3749,6 +3923,10 @@ func printUsage() {
 	fmt.Println("  --keep-workspace-error  Retain staged workspace on warning/failed runs (default deletes)")
 	fmt.Println("  --tui               Enable interactive terminal UI")
 	fmt.Println("  --fail-on <sev>     Exit non-zero if findings meet/exceed severity (critical|high|medium|low|info)")
+	fmt.Println("  --fail-on-exploitability <mode>  Exit non-zero if findings meet/exceed exploitability (confirmed-path|reachable|theoretical)")
+	fmt.Println("  --max-new-reachable <n>  Exit non-zero if reachable/confirmed-path new findings exceed n (-1 disables)")
+	fmt.Println("  --min-confidence-for-block <0..1>  Only block findings at/above confidence threshold (-1 disables)")
+	fmt.Println("  --require-attack-path-for-blocking  Only block findings with non-empty attack_path")
 	fmt.Println("  --baseline <path>   Compare against a previous audit.json for diff report")
 	fmt.Println("  --suppressions <path>  Suppressions YAML file (default ./.governor/suppressions.yaml)")
 	fmt.Println("  --show-suppressed   Include suppressed findings in reports")
@@ -3762,6 +3940,24 @@ func printUsage() {
 	fmt.Println("  --staged            Scan only staged files (for pre-commit use)")
 	fmt.Println("  --ignore-file <path>  Path to .governorignore file (default .governorignore if present)")
 	fmt.Println("")
+	fmt.Println("Flags (fix):")
+	fmt.Println("  --out <dir>          Output directory (default directory containing audit.json)")
+	fmt.Println("  --json               Output fix report JSON to stdout")
+	fmt.Println("  --max-suggestions <n>  Maximum findings to include (default 50)")
+	fmt.Println("  --only-finding <id>  Only include finding ID(s) (repeatable)")
+	fmt.Println("  --only-severity <sev>  Only include severity level(s) (repeatable)")
+	fmt.Println("  --only-check <id>    Only include check/track ID(s) (repeatable)")
+	fmt.Println("  --ai-profile <name>  AI profile (default codex)")
+	fmt.Println("  --ai-provider <name> AI provider override: codex-cli|openai-compatible")
+	fmt.Println("  --ai-model <id>      AI model override")
+	fmt.Println("  --ai-auth-mode <mode>  AI auth override: auto|account|api-key")
+	fmt.Println("  --ai-base-url <url>  AI base URL override for openai-compatible providers")
+	fmt.Println("  --ai-api-key-env <name>  AI API key env override")
+	fmt.Println("  --ai-bin <path>      AI executable for codex-cli provider (default codex)")
+	fmt.Println("  --allow-custom-ai-bin  Allow non-default ai binary (for testing)")
+	fmt.Println("  --execution-mode <sandboxed|host>  AI execution mode (default sandboxed)")
+	fmt.Println("  --ai-sandbox <read-only|workspace-write|danger-full-access>  Sandbox mode for sandboxed execution")
+	fmt.Println("")
 	fmt.Println("Flags (ci):")
 	fmt.Println("  --fail-on <sev>     Exit non-zero threshold (default high)")
 	fmt.Println("  --comment-file <path>  Write PR comment markdown to file")
@@ -3769,6 +3965,10 @@ func printUsage() {
 	fmt.Println("  --baseline-file <path>  Baseline file path (default .governor/baseline.json)")
 	fmt.Println("  --policy <path>     Apply policy file (default ./.governor/policy.yaml if present)")
 	fmt.Println("  --require-policy    Fail if no policy file is found")
+	fmt.Println("  --fail-on-exploitability <mode>  Exit non-zero if findings meet/exceed exploitability (confirmed-path|reachable|theoretical)")
+	fmt.Println("  --max-new-reachable <n>  Exit non-zero if reachable/confirmed-path new findings exceed n (-1 disables)")
+	fmt.Println("  --min-confidence-for-block <0..1>  Only block findings at/above confidence threshold (-1 disables)")
+	fmt.Println("  --require-attack-path-for-blocking  Only block findings with non-empty attack_path")
 	fmt.Println("  (also accepts most audit flags: --workers, --ai-*, --checks-dir, etc.)")
 	fmt.Println("")
 	fmt.Println("Flags (policy):")
@@ -4141,6 +4341,169 @@ func runScan(args []string) error {
 
 	if len(result.Findings) > 0 {
 		return fmt.Errorf("%d finding(s) detected", len(result.Findings))
+	}
+	return nil
+}
+
+func runFix(args []string) error {
+	fs := flag.NewFlagSet("fix", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	out := fs.String("out", "", "Output directory for fix artifacts (default directory containing audit.json)")
+	jsonOut := fs.Bool("json", false, "Output fix report as JSON")
+	maxSuggestions := fs.Int("max-suggestions", 50, "Maximum findings to include in fix suggestion generation")
+
+	aiProfile := fs.String("ai-profile", "codex", "AI profile name (default codex)")
+	aiProvider := fs.String("ai-provider", "", "AI provider override: codex-cli|openai-compatible")
+	aiModel := fs.String("ai-model", "", "AI model override")
+	aiAuthMode := fs.String("ai-auth-mode", "", "AI auth override: auto|account|api-key")
+	aiBaseURL := fs.String("ai-base-url", "", "AI base URL override for openai-compatible providers")
+	aiAPIKeyEnv := fs.String("ai-api-key-env", "", "AI API key environment variable override")
+
+	var aiBin string
+	fs.StringVar(&aiBin, "ai-bin", "codex", "AI CLI executable path (used by codex-cli provider)")
+	fs.StringVar(&aiBin, "codex-bin", "codex", "Deprecated alias for --ai-bin")
+
+	var allowCustomAIBin bool
+	fs.BoolVar(&allowCustomAIBin, "allow-custom-ai-bin", false, "Allow non-default AI binary path (for testing only)")
+	fs.BoolVar(&allowCustomAIBin, "allow-custom-codex-bin", false, "Deprecated alias for --allow-custom-ai-bin")
+
+	executionMode := fs.String("execution-mode", "sandboxed", "AI execution mode: sandboxed|host")
+
+	var aiSandbox string
+	fs.StringVar(&aiSandbox, "ai-sandbox", "read-only", "AI sandbox mode for sandboxed execution: read-only|workspace-write|danger-full-access")
+	fs.StringVar(&aiSandbox, "codex-sandbox", "read-only", "Deprecated alias for --ai-sandbox")
+
+	var onlyFindingIDs listFlag
+	var onlySeverities listFlag
+	var onlyChecks listFlag
+	fs.Var(&onlyFindingIDs, "only-finding", "Only suggest fixes for finding ID(s) (repeatable or comma-separated)")
+	fs.Var(&onlySeverities, "only-severity", "Only suggest fixes for severity level(s) (repeatable or comma-separated)")
+	fs.Var(&onlyChecks, "only-check", "Only suggest fixes for check/track ID(s) (repeatable or comma-separated)")
+
+	var positionalInput string
+	parseArgs := args
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		positionalInput = args[0]
+		parseArgs = args[1:]
+	}
+
+	if err := fs.Parse(parseArgs); err != nil {
+		return err
+	}
+	remaining := fs.Args()
+	switch {
+	case positionalInput == "" && len(remaining) == 1:
+		positionalInput = remaining[0]
+	case positionalInput != "" && len(remaining) == 0:
+		// valid
+	default:
+		return usageError("usage: governor fix <audit.json> [flags]")
+	}
+
+	if *maxSuggestions <= 0 {
+		return errors.New("--max-suggestions must be > 0")
+	}
+
+	cfg, cfgErr := config.Load()
+	if cfgErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", cfgErr)
+	}
+	setFlags := flagsExplicitlySet(fs)
+	applyConfig(cfg, setFlags, map[string]*string{
+		"ai-profile":     aiProfile,
+		"ai-provider":    aiProvider,
+		"ai-model":       aiModel,
+		"ai-auth-mode":   aiAuthMode,
+		"ai-base-url":    aiBaseURL,
+		"ai-api-key-env": aiAPIKeyEnv,
+		"execution-mode": executionMode,
+	}, nil, nil)
+	if _, ok := setFlags["ai-bin"]; !ok && cfg.AIBin != "" {
+		aiBin = cfg.AIBin
+	}
+	if _, ok := setFlags["ai-sandbox"]; !ok && cfg.AISandbox != "" {
+		aiSandbox = cfg.AISandbox
+	}
+	if strings.TrimSpace(aiBin) == "" {
+		return errors.New("--ai-bin cannot be empty")
+	}
+
+	modeValue, err := normalizeExecutionModeFlag(*executionMode)
+	if err != nil {
+		return err
+	}
+	sandboxValue, err := normalizeSandboxModeFlag(aiSandbox)
+	if err != nil {
+		return err
+	}
+	if modeValue == "host" {
+		sandboxValue = ""
+	}
+
+	aiRuntime, err := ai.ResolveRuntime(ai.ResolveOptions{
+		Profile:       strings.TrimSpace(*aiProfile),
+		Provider:      strings.TrimSpace(*aiProvider),
+		Model:         strings.TrimSpace(*aiModel),
+		AuthMode:      strings.TrimSpace(*aiAuthMode),
+		Bin:           strings.TrimSpace(aiBin),
+		BaseURL:       strings.TrimSpace(*aiBaseURL),
+		APIKeyEnv:     strings.TrimSpace(*aiAPIKeyEnv),
+		ExecutionMode: modeValue,
+		SandboxMode:   sandboxValue,
+	})
+	if err != nil {
+		return err
+	}
+
+	aiInfo := trust.AIBinary{}
+	if aiRuntime.UsesCLI() {
+		aiInfo, err = trust.ResolveAIBinary(context.Background(), aiRuntime.Bin, allowCustomAIBin)
+		if err != nil {
+			return err
+		}
+		aiRuntime.Bin = aiInfo.ResolvedPath
+	}
+
+	fixReport, paths, err := fix.Run(context.Background(), fix.Options{
+		AuditPath:      positionalInput,
+		OutDir:         strings.TrimSpace(*out),
+		AIRuntime:      aiRuntime,
+		AIRequestedBin: aiInfo.RequestedPath,
+		AIBin:          aiInfo.ResolvedPath,
+		AIVersion:      aiInfo.Version,
+		AISHA256:       aiInfo.SHA256,
+		Filters: model.FixFilters{
+			OnlyFindingIDs: onlyFindingIDs.Values(),
+			OnlySeverities: onlySeverities.Values(),
+			OnlyChecks:     onlyChecks.Values(),
+			MaxSuggestions: *maxSuggestions,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("fix suggestion run complete")
+	fmt.Printf("source audit:   %s\n", fixReport.SourceAudit)
+	fmt.Printf("fix artifacts:  %s\n", paths.FixDir)
+	fmt.Printf("fix json:       %s\n", paths.JSONPath)
+	fmt.Printf("fix markdown:   %s\n", paths.MarkdownPath)
+	fmt.Printf("fix worker log: %s\n", paths.LogPath)
+	fmt.Printf("findings:       %d selected / %d total\n", fixReport.Selected, fixReport.TotalFindings)
+	fmt.Printf("suggestions:    %d\n", len(fixReport.Suggestions))
+	if len(fixReport.Warnings) > 0 {
+		for _, warning := range fixReport.Warnings {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+		}
+	}
+
+	if *jsonOut {
+		b, marshalErr := json.MarshalIndent(fixReport, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("marshal fix report: %w", marshalErr)
+		}
+		fmt.Println(string(b))
 	}
 	return nil
 }
