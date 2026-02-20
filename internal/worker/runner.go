@@ -901,7 +901,13 @@ func writeSchema(outDir string) (string, error) {
           "impact": {"type": "string"},
           "remediation": {"type": "string"},
           "file_refs": {"type": "array", "items": {"type": "string"}},
-          "confidence": {"type": "number"}
+          "confidence": {"type": "number"},
+          "attack_path": {"type": "array", "items": {"type": "string"}},
+          "entry_points": {"type": "array", "items": {"type": "string"}},
+          "sinks": {"type": "array", "items": {"type": "string"}},
+          "guards_detected": {"type": "array", "items": {"type": "string"}},
+          "reachability_score": {"type": "number"},
+          "exploitability": {"type": "string"}
         }
       }
     }
@@ -937,6 +943,17 @@ func normalizeFindings(in []model.Finding, track string) []model.Finding {
 		if f.Confidence > 1 {
 			f.Confidence = 1
 		}
+		if f.ReachabilityScore < 0 {
+			f.ReachabilityScore = 0
+		}
+		if f.ReachabilityScore > 1 {
+			f.ReachabilityScore = 1
+		}
+		f.Exploitability = normalizeExploitability(f.Exploitability)
+		f.AttackPath = sanitizeStringSlice(f.AttackPath)
+		f.EntryPoints = sanitizeStringSlice(f.EntryPoints)
+		f.Sinks = sanitizeStringSlice(f.Sinks)
+		f.Guards = sanitizeStringSlice(f.Guards)
 		f.SourceTrack = track
 		if len(f.FileRefs) > 0 {
 			for i := range f.FileRefs {
@@ -982,6 +999,11 @@ func redactWorkerOutput(in workerOutput) workerOutput {
 			f.Evidence = redact.Text(strings.TrimSpace(f.Evidence))
 			f.Impact = redact.Text(strings.TrimSpace(f.Impact))
 			f.Remediation = redact.Text(strings.TrimSpace(f.Remediation))
+			f.AttackPath = redact.Strings(sanitizeStringSlice(f.AttackPath))
+			f.EntryPoints = redact.Strings(sanitizeStringSlice(f.EntryPoints))
+			f.Sinks = redact.Strings(sanitizeStringSlice(f.Sinks))
+			f.Guards = redact.Strings(sanitizeStringSlice(f.Guards))
+			f.Exploitability = normalizeExploitability(f.Exploitability)
 			findings = append(findings, f)
 		}
 		in.Findings = findings
@@ -1034,6 +1056,37 @@ func normalizeSeverity(s string) string {
 	default:
 		return "info"
 	}
+}
+
+func normalizeExploitability(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "confirmed-path":
+		return "confirmed-path"
+	case "reachable":
+		return "reachable"
+	case "theoretical":
+		return "theoretical"
+	default:
+		return ""
+	}
+}
+
+func sanitizeStringSlice(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		out = append(out, redact.Text(item))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func autoID(track, title string) string {

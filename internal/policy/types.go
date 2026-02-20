@@ -3,6 +3,7 @@ package policy
 import "time"
 
 const APIVersion = "governor/policy/v1"
+const APIVersionV2 = "governor/policy/v2"
 
 type Policy struct {
 	APIVersion string   `yaml:"api_version" json:"api_version"`
@@ -12,11 +13,15 @@ type Policy struct {
 }
 
 type Gate struct {
-	FailOnSeverity      string   `yaml:"fail_on_severity,omitempty" json:"fail_on_severity,omitempty"`
-	MaxSuppressionRatio *float64 `yaml:"max_suppression_ratio,omitempty" json:"max_suppression_ratio,omitempty"`
-	RequireChecks       []string `yaml:"require_checks,omitempty" json:"require_checks,omitempty"`
-	ForbidChecks        []string `yaml:"forbid_checks,omitempty" json:"forbid_checks,omitempty"`
-	MaxNewFindings      *int     `yaml:"max_new_findings,omitempty" json:"max_new_findings,omitempty"`
+	FailOnSeverity               string   `yaml:"fail_on_severity,omitempty" json:"fail_on_severity,omitempty"`
+	FailOnExploitability         string   `yaml:"fail_on_exploitability,omitempty" json:"fail_on_exploitability,omitempty"`
+	MaxSuppressionRatio          *float64 `yaml:"max_suppression_ratio,omitempty" json:"max_suppression_ratio,omitempty"`
+	RequireChecks                []string `yaml:"require_checks,omitempty" json:"require_checks,omitempty"`
+	ForbidChecks                 []string `yaml:"forbid_checks,omitempty" json:"forbid_checks,omitempty"`
+	MaxNewFindings               *int     `yaml:"max_new_findings,omitempty" json:"max_new_findings,omitempty"`
+	MaxNewReachableFindings      *int     `yaml:"max_new_reachable_findings,omitempty" json:"max_new_reachable_findings,omitempty"`
+	MinConfidenceForBlock        *float64 `yaml:"min_confidence_for_block,omitempty" json:"min_confidence_for_block,omitempty"`
+	RequireAttackPathForBlocking *bool    `yaml:"require_attack_path_for_blocking,omitempty" json:"require_attack_path_for_blocking,omitempty"`
 }
 
 type Rule struct {

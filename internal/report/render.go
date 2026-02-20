@@ -851,6 +851,10 @@ func redactReport(in model.AuditReport) model.AuditReport {
 			f.Evidence = redact.Text(f.Evidence)
 			f.Impact = redact.Text(f.Impact)
 			f.Remediation = redact.Text(f.Remediation)
+			f.AttackPath = redact.Strings(f.AttackPath)
+			f.EntryPoints = redact.Strings(f.EntryPoints)
+			f.Sinks = redact.Strings(f.Sinks)
+			f.Guards = redact.Strings(f.Guards)
 			findings = append(findings, f)
 		}
 		in.Findings = findings
@@ -862,6 +866,10 @@ func redactReport(in model.AuditReport) model.AuditReport {
 			f.Evidence = redact.Text(f.Evidence)
 			f.Impact = redact.Text(f.Impact)
 			f.Remediation = redact.Text(f.Remediation)
+			f.AttackPath = redact.Strings(f.AttackPath)
+			f.EntryPoints = redact.Strings(f.EntryPoints)
+			f.Sinks = redact.Strings(f.Sinks)
+			f.Guards = redact.Strings(f.Guards)
 			suppressed = append(suppressed, f)
 		}
 		in.SuppressedFindings = suppressed

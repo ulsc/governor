@@ -13,19 +13,25 @@ const (
 var DefaultTracks = []WorkerTrack{TrackAppSec, TrackDependencies, TrackSecrets}
 
 type Finding struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Severity    string    `json:"severity"`
-	Category    string    `json:"category"`
-	Evidence    string    `json:"evidence"`
-	Impact      string    `json:"impact"`
-	Remediation string    `json:"remediation"`
-	FileRefs    []string  `json:"file_refs,omitempty"`
-	Confidence  float64   `json:"confidence,omitempty"`
-	CWE         string    `json:"cwe,omitempty"`
-	OWASP       string    `json:"owasp,omitempty"`
-	SourceTrack string    `json:"source_track"`
-	CreatedAt   time.Time `json:"created_at,omitempty"`
+	ID                string    `json:"id"`
+	Title             string    `json:"title"`
+	Severity          string    `json:"severity"`
+	Category          string    `json:"category"`
+	Evidence          string    `json:"evidence"`
+	Impact            string    `json:"impact"`
+	Remediation       string    `json:"remediation"`
+	FileRefs          []string  `json:"file_refs,omitempty"`
+	Confidence        float64   `json:"confidence,omitempty"`
+	CWE               string    `json:"cwe,omitempty"`
+	OWASP             string    `json:"owasp,omitempty"`
+	AttackPath        []string  `json:"attack_path,omitempty"`
+	EntryPoints       []string  `json:"entry_points,omitempty"`
+	Sinks             []string  `json:"sinks,omitempty"`
+	Guards            []string  `json:"guards_detected,omitempty"`
+	ReachabilityScore float64   `json:"reachability_score,omitempty"`
+	Exploitability    string    `json:"exploitability,omitempty"`
+	SourceTrack       string    `json:"source_track"`
+	CreatedAt         time.Time `json:"created_at,omitempty"`
 
 	Suppressed        bool   `json:"suppressed,omitempty"`
 	SuppressionReason string `json:"suppression_reason,omitempty"`
@@ -118,11 +124,15 @@ type AuditReport struct {
 }
 
 type PolicyGate struct {
-	FailOnSeverity      string   `json:"fail_on_severity,omitempty"`
-	MaxSuppressionRatio float64  `json:"max_suppression_ratio,omitempty"`
-	MaxNewFindings      int      `json:"max_new_findings,omitempty"`
-	RequireChecks       []string `json:"require_checks,omitempty"`
-	ForbidChecks        []string `json:"forbid_checks,omitempty"`
+	FailOnSeverity               string   `json:"fail_on_severity,omitempty"`
+	FailOnExploitability         string   `json:"fail_on_exploitability,omitempty"`
+	MaxSuppressionRatio          float64  `json:"max_suppression_ratio,omitempty"`
+	MaxNewFindings               int      `json:"max_new_findings,omitempty"`
+	MaxNewReachableFindings      int      `json:"max_new_reachable_findings,omitempty"`
+	MinConfidenceForBlock        float64  `json:"min_confidence_for_block,omitempty"`
+	RequireAttackPathForBlocking bool     `json:"require_attack_path_for_blocking,omitempty"`
+	RequireChecks                []string `json:"require_checks,omitempty"`
+	ForbidChecks                 []string `json:"forbid_checks,omitempty"`
 }
 
 type PolicyViolation struct {
@@ -143,4 +153,53 @@ type PolicyDecision struct {
 	Effective  PolicyGate        `json:"effective"`
 	Violations []PolicyViolation `json:"violations,omitempty"`
 	Warnings   []string          `json:"warnings,omitempty"`
+}
+
+type FixFilters struct {
+	OnlyFindingIDs []string `json:"only_finding_ids,omitempty"`
+	OnlySeverities []string `json:"only_severities,omitempty"`
+	OnlyChecks     []string `json:"only_checks,omitempty"`
+	MaxSuggestions int      `json:"max_suggestions,omitempty"`
+}
+
+type FixFileChange struct {
+	Path          string   `json:"path"`
+	ChangeType    string   `json:"change_type,omitempty"`
+	Instructions  []string `json:"instructions,omitempty"`
+	CodeLocations []string `json:"code_locations,omitempty"`
+}
+
+type FixSuggestion struct {
+	FindingID       string          `json:"finding_id"`
+	Title           string          `json:"title"`
+	SourceTrack     string          `json:"source_track,omitempty"`
+	Priority        string          `json:"priority,omitempty"`
+	Summary         string          `json:"summary"`
+	Files           []FixFileChange `json:"files,omitempty"`
+	ValidationSteps []string        `json:"validation_steps,omitempty"`
+	RiskNotes       []string        `json:"risk_notes,omitempty"`
+	Confidence      float64         `json:"confidence,omitempty"`
+}
+
+type FixReport struct {
+	GeneratedAt    time.Time       `json:"generated_at"`
+	SourceAudit    string          `json:"source_audit"`
+	OutDir         string          `json:"out_dir"`
+	SourceRunID    string          `json:"source_run_id,omitempty"`
+	AIProfile      string          `json:"ai_profile,omitempty"`
+	AIProvider     string          `json:"ai_provider,omitempty"`
+	AIModel        string          `json:"ai_model,omitempty"`
+	AIAuthMode     string          `json:"ai_auth_mode,omitempty"`
+	AIRequestedBin string          `json:"ai_requested_bin,omitempty"`
+	AIBin          string          `json:"ai_bin,omitempty"`
+	AIVersion      string          `json:"ai_version,omitempty"`
+	AISHA256       string          `json:"ai_sha256,omitempty"`
+	ExecutionMode  string          `json:"execution_mode,omitempty"`
+	AISandbox      string          `json:"ai_sandbox,omitempty"`
+	Filters        FixFilters      `json:"filters"`
+	TotalFindings  int             `json:"total_findings"`
+	Selected       int             `json:"selected_findings"`
+	Suggestions    []FixSuggestion `json:"suggestions"`
+	Warnings       []string        `json:"warnings,omitempty"`
+	Errors         []string        `json:"errors,omitempty"`
 }

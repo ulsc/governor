@@ -13,11 +13,15 @@ import (
 
 func EffectiveGate(p Policy, report model.AuditReport) model.PolicyGate {
 	effective := model.PolicyGate{
-		FailOnSeverity:      "none",
-		MaxSuppressionRatio: -1,
-		MaxNewFindings:      -1,
-		RequireChecks:       nil,
-		ForbidChecks:        nil,
+		FailOnSeverity:               "none",
+		FailOnExploitability:         "none",
+		MaxSuppressionRatio:          -1,
+		MaxNewFindings:               -1,
+		MaxNewReachableFindings:      -1,
+		MinConfidenceForBlock:        -1,
+		RequireAttackPathForBlocking: false,
+		RequireChecks:                nil,
+		ForbidChecks:                 nil,
 	}
 	applyGate(&effective, p.Defaults)
 	for _, rule := range p.Rules {
@@ -58,12 +62,13 @@ func Evaluate(path string, p Policy, report model.AuditReport, dr *diff.DiffRepo
 
 func evaluateViolations(gate model.PolicyGate, report model.AuditReport, dr *diff.DiffReport) []model.PolicyViolation {
 	out := make([]model.PolicyViolation, 0, 8)
+	filteredFindings := filterBlockingCandidates(report.Findings, gate)
 
 	if isValidSeverity(gate.FailOnSeverity) && gate.FailOnSeverity != "none" {
 		threshold := severityWeight(gate.FailOnSeverity)
 		count := 0
 		var first model.Finding
-		for _, finding := range report.Findings {
+		for _, finding := range filteredFindings {
 			if severityWeight(finding.Severity) <= threshold {
 				if count == 0 {
 					first = finding
@@ -75,6 +80,30 @@ func evaluateViolations(gate model.PolicyGate, report model.AuditReport, dr *dif
 			out = append(out, model.PolicyViolation{
 				Code:     "fail_on_severity",
 				Message:  fmt.Sprintf("%d finding(s) meet or exceed fail_on_severity=%s", count, gate.FailOnSeverity),
+				Severity: first.Severity,
+				Category: first.Category,
+				CheckID:  first.SourceTrack,
+				FileRefs: append([]string{}, first.FileRefs...),
+			})
+		}
+	}
+
+	if isValidExploitability(gate.FailOnExploitability) && gate.FailOnExploitability != "none" {
+		threshold := exploitabilityWeight(gate.FailOnExploitability)
+		count := 0
+		var first model.Finding
+		for _, finding := range filteredFindings {
+			if exploitabilityWeight(finding.Exploitability) <= threshold {
+				if count == 0 {
+					first = finding
+				}
+				count++
+			}
+		}
+		if count > 0 {
+			out = append(out, model.PolicyViolation{
+				Code:     "fail_on_exploitability",
+				Message:  fmt.Sprintf("%d finding(s) meet or exceed fail_on_exploitability=%s", count, gate.FailOnExploitability),
 				Severity: first.Severity,
 				Category: first.Category,
 				CheckID:  first.SourceTrack,
@@ -145,6 +174,34 @@ func evaluateViolations(gate model.PolicyGate, report model.AuditReport, dr *dif
 		}
 	}
 
+	if gate.MaxNewReachableFindings >= 0 {
+		candidates := report.Findings
+		if dr != nil {
+			candidates = dr.New
+		}
+		filtered := filterBlockingCandidates(candidates, gate)
+		newReachable := 0
+		var first model.Finding
+		for _, finding := range filtered {
+			if exploitabilityWeight(finding.Exploitability) <= exploitabilityWeight("reachable") {
+				if newReachable == 0 {
+					first = finding
+				}
+				newReachable++
+			}
+		}
+		if newReachable > gate.MaxNewReachableFindings {
+			out = append(out, model.PolicyViolation{
+				Code:     "max_new_reachable_findings",
+				Message:  fmt.Sprintf("new reachable findings %d exceed max_new_reachable_findings=%d", newReachable, gate.MaxNewReachableFindings),
+				Severity: first.Severity,
+				Category: first.Category,
+				CheckID:  first.SourceTrack,
+				FileRefs: append([]string{}, first.FileRefs...),
+			})
+		}
+	}
+
 	return out
 }
 
@@ -160,6 +217,18 @@ func applyGate(eff *model.PolicyGate, overlay Gate) {
 	}
 	if overlay.MaxNewFindings != nil {
 		eff.MaxNewFindings = *overlay.MaxNewFindings
+	}
+	if overlay.MaxNewReachableFindings != nil {
+		eff.MaxNewReachableFindings = *overlay.MaxNewReachableFindings
+	}
+	if overlay.MinConfidenceForBlock != nil {
+		eff.MinConfidenceForBlock = *overlay.MinConfidenceForBlock
+	}
+	if overlay.RequireAttackPathForBlocking != nil {
+		eff.RequireAttackPathForBlocking = *overlay.RequireAttackPathForBlocking
+	}
+	if mode := strings.ToLower(strings.TrimSpace(overlay.FailOnExploitability)); mode != "" {
+		eff.FailOnExploitability = mode
 	}
 	if len(overlay.RequireChecks) > 0 {
 		eff.RequireChecks = append([]string{}, overlay.RequireChecks...)
@@ -395,4 +464,43 @@ func severityWeight(sev string) int {
 	default:
 		return 4
 	}
+}
+
+func exploitabilityWeight(value string) int {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "confirmed-path":
+		return 0
+	case "reachable":
+		return 1
+	case "theoretical":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func filterBlockingCandidates(findings []model.Finding, gate model.PolicyGate) []model.Finding {
+	if len(findings) == 0 {
+		return nil
+	}
+	out := make([]model.Finding, 0, len(findings))
+	for _, finding := range findings {
+		if gate.MinConfidenceForBlock >= 0 && finding.Confidence < gate.MinConfidenceForBlock {
+			continue
+		}
+		if gate.RequireAttackPathForBlocking && !hasAttackPath(finding.AttackPath) {
+			continue
+		}
+		out = append(out, finding)
+	}
+	return out
+}
+
+func hasAttackPath(path []string) bool {
+	for _, step := range path {
+		if strings.TrimSpace(step) != "" {
+			return true
+		}
+	}
+	return false
 }

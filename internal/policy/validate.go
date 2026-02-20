@@ -7,7 +7,10 @@ import (
 )
 
 func Validate(p Policy) error {
-	if strings.TrimSpace(p.APIVersion) != APIVersion {
+	switch strings.TrimSpace(p.APIVersion) {
+	case APIVersion, APIVersionV2:
+		// supported
+	default:
 		return fmt.Errorf("unsupported policy api_version %q", p.APIVersion)
 	}
 	if err := validateGate("defaults", p.Defaults); err != nil {
@@ -51,6 +54,9 @@ func validateGate(prefix string, gate Gate) error {
 	if gate.FailOnSeverity != "" && !isValidSeverity(gate.FailOnSeverity) {
 		return fmt.Errorf("%s.fail_on_severity must be one of critical|high|medium|low|info|none", prefix)
 	}
+	if gate.FailOnExploitability != "" && !isValidExploitability(gate.FailOnExploitability) {
+		return fmt.Errorf("%s.fail_on_exploitability must be one of confirmed-path|reachable|theoretical|none", prefix)
+	}
 	if gate.MaxSuppressionRatio != nil {
 		if *gate.MaxSuppressionRatio != -1 && (*gate.MaxSuppressionRatio < 0 || *gate.MaxSuppressionRatio > 1) {
 			return fmt.Errorf("%s.max_suppression_ratio must be between 0.0 and 1.0 (or -1 to disable)", prefix)
@@ -58,6 +64,14 @@ func validateGate(prefix string, gate Gate) error {
 	}
 	if gate.MaxNewFindings != nil && *gate.MaxNewFindings < -1 {
 		return fmt.Errorf("%s.max_new_findings must be >= -1", prefix)
+	}
+	if gate.MaxNewReachableFindings != nil && *gate.MaxNewReachableFindings < -1 {
+		return fmt.Errorf("%s.max_new_reachable_findings must be >= -1", prefix)
+	}
+	if gate.MinConfidenceForBlock != nil {
+		if *gate.MinConfidenceForBlock != -1 && (*gate.MinConfidenceForBlock < 0 || *gate.MinConfidenceForBlock > 1) {
+			return fmt.Errorf("%s.min_confidence_for_block must be between 0.0 and 1.0 (or -1 to disable)", prefix)
+		}
 	}
 	for _, c := range gate.RequireChecks {
 		if strings.TrimSpace(c) == "" {
@@ -94,6 +108,15 @@ func validateMatchSpec(prefix string, spec MatchSpec) error {
 func isValidSeverity(raw string) bool {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "critical", "high", "medium", "low", "info", "none":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidExploitability(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "confirmed-path", "reachable", "theoretical", "none":
 		return true
 	default:
 		return false

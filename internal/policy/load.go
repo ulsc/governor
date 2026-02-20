@@ -47,6 +47,14 @@ func Normalize(in Policy) Policy {
 		value := -1
 		in.Defaults.MaxNewFindings = &value
 	}
+	if in.Defaults.MaxNewReachableFindings == nil {
+		value := -1
+		in.Defaults.MaxNewReachableFindings = &value
+	}
+	if in.Defaults.MinConfidenceForBlock == nil {
+		value := -1.0
+		in.Defaults.MinConfidenceForBlock = &value
+	}
 
 	rules := make([]Rule, 0, len(in.Rules))
 	for _, rule := range in.Rules {
@@ -72,6 +80,7 @@ func Normalize(in Policy) Policy {
 
 func normalizeGate(g Gate) Gate {
 	g.FailOnSeverity = strings.ToLower(strings.TrimSpace(g.FailOnSeverity))
+	g.FailOnExploitability = strings.ToLower(strings.TrimSpace(g.FailOnExploitability))
 	g.RequireChecks = normalizeStringList(g.RequireChecks)
 	g.ForbidChecks = normalizeStringList(g.ForbidChecks)
 	return g

@@ -51,10 +51,10 @@ type AuditOptions struct {
 
 	SandboxDenyHostFallback bool
 
-	BaselinePath      string
-	SuppressionsPath  string
-	ShowSuppressed    bool
-	IncludeTestFiles  bool
+	BaselinePath     string
+	SuppressionsPath string
+	ShowSuppressed   bool
+	IncludeTestFiles bool
 
 	Quick bool
 
@@ -451,6 +451,10 @@ func redactFindings(in []model.Finding) []model.Finding {
 		f.Evidence = redact.Text(strings.TrimSpace(f.Evidence))
 		f.Impact = redact.Text(strings.TrimSpace(f.Impact))
 		f.Remediation = redact.Text(strings.TrimSpace(f.Remediation))
+		f.AttackPath = redact.Strings(f.AttackPath)
+		f.EntryPoints = redact.Strings(f.EntryPoints)
+		f.Sinks = redact.Strings(f.Sinks)
+		f.Guards = redact.Strings(f.Guards)
 		out = append(out, f)
 	}
 	return out
@@ -474,12 +478,30 @@ func dedupeFindings(in []model.Finding) []model.Finding {
 			if severityWeight(f.Severity) < severityWeight(existing.Severity) {
 				existing.Severity = f.Severity
 			}
+			if exploitabilityWeight(f.Exploitability) < exploitabilityWeight(existing.Exploitability) {
+				existing.Exploitability = f.Exploitability
+			}
 			if f.Confidence > existing.Confidence {
 				existing.Confidence = f.Confidence
+			}
+			if f.ReachabilityScore > existing.ReachabilityScore {
+				existing.ReachabilityScore = f.ReachabilityScore
 			}
 			existing.SourceTrack = mergeSourceTracks(existing.SourceTrack, f.SourceTrack)
 			if len(existing.FileRefs) == 0 && len(f.FileRefs) > 0 {
 				existing.FileRefs = append([]string{}, f.FileRefs...)
+			}
+			if len(existing.AttackPath) == 0 && len(f.AttackPath) > 0 {
+				existing.AttackPath = append([]string{}, f.AttackPath...)
+			}
+			if len(existing.EntryPoints) == 0 && len(f.EntryPoints) > 0 {
+				existing.EntryPoints = append([]string{}, f.EntryPoints...)
+			}
+			if len(existing.Sinks) == 0 && len(f.Sinks) > 0 {
+				existing.Sinks = append([]string{}, f.Sinks...)
+			}
+			if len(existing.Guards) == 0 && len(f.Guards) > 0 {
+				existing.Guards = append([]string{}, f.Guards...)
 			}
 			out[idx] = existing
 			continue
@@ -549,6 +571,19 @@ func severityWeight(sev string) int {
 		return 3
 	default:
 		return 4
+	}
+}
+
+func exploitabilityWeight(value string) int {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "confirmed-path":
+		return 0
+	case "reachable":
+		return 1
+	case "theoretical":
+		return 2
+	default:
+		return 3
 	}
 }
 
