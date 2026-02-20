@@ -55,7 +55,7 @@ func TestCompare_Mixed(t *testing.T) {
 	current := model.AuditReport{
 		Findings: []model.Finding{
 			shared,
-			{Title: "New", Severity: "critical", Category: "injection", Evidence: "new evidence"},
+			{Title: "New", Severity: "critical", Category: "injection", Evidence: "new evidence", Exploitability: "reachable"},
 		},
 	}
 
@@ -74,6 +74,9 @@ func TestCompare_Mixed(t *testing.T) {
 	}
 	if dr.Fixed[0].Title != "Old" {
 		t.Fatalf("expected fixed finding 'Old', got %q", dr.Fixed[0].Title)
+	}
+	if dr.Summary.NewReachableCount != 1 {
+		t.Fatalf("expected 1 new reachable finding, got %d", dr.Summary.NewReachableCount)
 	}
 }
 
@@ -116,5 +119,34 @@ func TestCompare_FileRefsAffectKey(t *testing.T) {
 	dr := Compare(baseline, current)
 	if dr.Summary.NewCount != 1 || dr.Summary.FixedCount != 1 {
 		t.Fatalf("expected different file refs to create new+fixed, got new=%d fixed=%d", dr.Summary.NewCount, dr.Summary.FixedCount)
+	}
+}
+
+func TestCompare_SummaryDeltas(t *testing.T) {
+	baseline := model.AuditReport{
+		Findings: []model.Finding{
+			{Title: "A", Severity: "high", Category: "auth", Evidence: "e1", Exploitability: "theoretical"},
+			{Title: "B", Severity: "low", Category: "config", Evidence: "e2"},
+		},
+	}
+	current := model.AuditReport{
+		Findings: []model.Finding{
+			{Title: "A", Severity: "critical", Category: "auth", Evidence: "e1", Exploitability: "confirmed-path"},
+			{Title: "C", Severity: "medium", Category: "input", Evidence: "e3", Exploitability: "reachable"},
+		},
+	}
+
+	dr := Compare(baseline, current)
+	if dr.Summary.SeverityDelta["critical"] != 1 {
+		t.Fatalf("expected severity delta critical=1, got %d", dr.Summary.SeverityDelta["critical"])
+	}
+	if dr.Summary.SeverityDelta["low"] != -1 {
+		t.Fatalf("expected severity delta low=-1, got %d", dr.Summary.SeverityDelta["low"])
+	}
+	if dr.Summary.ExploitabilityDelta["confirmed-path"] != 1 {
+		t.Fatalf("expected exploitability delta confirmed-path=1, got %d", dr.Summary.ExploitabilityDelta["confirmed-path"])
+	}
+	if dr.Summary.ExploitabilityDelta["theoretical"] != -1 {
+		t.Fatalf("expected exploitability delta theoretical=-1, got %d", dr.Summary.ExploitabilityDelta["theoretical"])
 	}
 }

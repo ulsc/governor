@@ -42,6 +42,12 @@ func TestFindingJSONOmitemptyAndOptionalFields(t *testing.T) {
 		`"confidence":`,
 		`"cwe":`,
 		`"owasp":`,
+		`"attack_path":`,
+		`"entry_points":`,
+		`"sinks":`,
+		`"guards_detected":`,
+		`"reachability_score":`,
+		`"exploitability":`,
 		`"suppressed":`,
 		`"suppression_reason":`,
 		`"suppression_source":`,
@@ -59,6 +65,12 @@ func TestFindingJSONOmitemptyAndOptionalFields(t *testing.T) {
 	optional.Confidence = 0.91
 	optional.CWE = "CWE-798"
 	optional.OWASP = "A07:2021"
+	optional.AttackPath = []string{"request.body.userId", "service.LoadUser", "db.QueryRow"}
+	optional.EntryPoints = []string{"POST /api/users"}
+	optional.Sinks = []string{"db.QueryRow"}
+	optional.Guards = []string{"requireAuth middleware"}
+	optional.ReachabilityScore = 0.82
+	optional.Exploitability = "reachable"
 	optional.CreatedAt = time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	optional.Suppressed = true
 	optional.SuppressionReason = "accepted risk"
@@ -75,6 +87,12 @@ func TestFindingJSONOmitemptyAndOptionalFields(t *testing.T) {
 		`"confidence":0.91`,
 		`"cwe":"CWE-798"`,
 		`"owasp":"A07:2021"`,
+		`"attack_path":["request.body.userId","service.LoadUser","db.QueryRow"]`,
+		`"entry_points":["POST /api/users"]`,
+		`"sinks":["db.QueryRow"]`,
+		`"guards_detected":["requireAuth middleware"]`,
+		`"reachability_score":0.82`,
+		`"exploitability":"reachable"`,
 		`"created_at":`,
 		`"suppressed":true`,
 		`"suppression_reason":"accepted risk"`,
@@ -278,6 +296,68 @@ func TestAuditReportJSONRoundTrip(t *testing.T) {
 	var got AuditReport
 	if err := json.Unmarshal(payload, &got); err != nil {
 		t.Fatalf("unmarshal report: %v", err)
+	}
+	if !reflect.DeepEqual(got, report) {
+		t.Fatalf("round-trip mismatch:\nwant: %+v\ngot:  %+v", report, got)
+	}
+}
+
+func TestFixReportJSONRoundTrip(t *testing.T) {
+	report := FixReport{
+		GeneratedAt: time.Date(2026, time.February, 20, 12, 0, 0, 0, time.UTC),
+		SourceAudit: "/tmp/runs/20260220-120000/audit.json",
+		OutDir:      "/tmp/runs/20260220-120000/fix",
+		SourceRunID: "20260220-120000",
+		AIProfile:   "codex",
+		AIProvider:  "codex-cli",
+		Filters: FixFilters{
+			OnlyFindingIDs: []string{"appsec-foo"},
+			OnlySeverities: []string{"high"},
+			OnlyChecks:     []string{"appsec"},
+			MaxSuggestions: 25,
+		},
+		TotalFindings: 2,
+		Selected:      1,
+		Suggestions: []FixSuggestion{
+			{
+				FindingID:   "appsec-foo",
+				Title:       "Missing authorization check",
+				SourceTrack: "appsec",
+				Priority:    "high",
+				Summary:     "Add role guard before sensitive handler logic.",
+				Files: []FixFileChange{
+					{
+						Path:         "api/users.go",
+						ChangeType:   "modify",
+						Instructions: []string{"Add requireAdmin guard at route entry."},
+					},
+				},
+				ValidationSteps: []string{"Run auth integration tests."},
+				RiskNotes:       []string{"May reject previously allowed traffic."},
+				Confidence:      0.82,
+			},
+		},
+	}
+
+	payload, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal fix report: %v", err)
+	}
+	jsonStr := string(payload)
+	for _, want := range []string{
+		`"source_audit":"`,
+		`"filters":`,
+		`"suggestions":`,
+		`"finding_id":"appsec-foo"`,
+	} {
+		if !strings.Contains(jsonStr, want) {
+			t.Fatalf("expected JSON to include %s, got %s", want, jsonStr)
+		}
+	}
+
+	var got FixReport
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal fix report: %v", err)
 	}
 	if !reflect.DeepEqual(got, report) {
 		t.Fatalf("round-trip mismatch:\nwant: %+v\ngot:  %+v", report, got)

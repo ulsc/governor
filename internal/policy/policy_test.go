@@ -127,3 +127,81 @@ func TestRuleMatchOverridesDefaults(t *testing.T) {
 		t.Fatalf("expected rule override severity medium, got %s", gate.FailOnSeverity)
 	}
 }
+
+func TestValidate_AcceptsV2(t *testing.T) {
+	p := Normalize(Policy{
+		APIVersion: APIVersionV2,
+		Defaults: Gate{
+			FailOnSeverity:       "high",
+			FailOnExploitability: "reachable",
+		},
+	})
+	if err := Validate(p); err != nil {
+		t.Fatalf("expected v2 policy to validate: %v", err)
+	}
+}
+
+func TestEvaluate_ExploitabilityAndReachabilityGates(t *testing.T) {
+	maxNewReachable := 0
+	minConfidence := 0.8
+	requirePath := true
+	p := Normalize(Policy{
+		APIVersion: APIVersionV2,
+		Defaults: Gate{
+			FailOnExploitability:         "reachable",
+			MaxNewReachableFindings:      &maxNewReachable,
+			MinConfidenceForBlock:        &minConfidence,
+			RequireAttackPathForBlocking: &requirePath,
+		},
+	})
+
+	report := model.AuditReport{
+		Findings: []model.Finding{
+			{
+				Title:          "Reachable issue",
+				Severity:       "high",
+				Category:       "auth",
+				SourceTrack:    "appsec",
+				Confidence:     0.9,
+				Exploitability: "reachable",
+				AttackPath:     []string{"request.userId -> db.QueryRow"},
+				FileRefs:       []string{"api/auth.go"},
+			},
+			{
+				Title:          "Low-confidence reachable issue",
+				Severity:       "high",
+				Category:       "auth",
+				SourceTrack:    "appsec",
+				Confidence:     0.4,
+				Exploitability: "reachable",
+				AttackPath:     []string{"request.userId -> db.QueryRow"},
+			},
+			{
+				Title:          "No attack path issue",
+				Severity:       "high",
+				Category:       "auth",
+				SourceTrack:    "appsec",
+				Confidence:     0.95,
+				Exploitability: "reachable",
+			},
+		},
+	}
+	dr := &diff.DiffReport{
+		New: []model.Finding{report.Findings[0]},
+	}
+
+	decision := Evaluate(".governor/policy.yaml", p, report, dr)
+	if decision.Passed {
+		t.Fatal("expected policy decision to fail for reachable finding")
+	}
+	codes := map[string]bool{}
+	for _, violation := range decision.Violations {
+		codes[violation.Code] = true
+	}
+	if !codes["fail_on_exploitability"] {
+		t.Fatalf("expected fail_on_exploitability violation, got %+v", decision.Violations)
+	}
+	if !codes["max_new_reachable_findings"] {
+		t.Fatalf("expected max_new_reachable_findings violation, got %+v", decision.Violations)
+	}
+}

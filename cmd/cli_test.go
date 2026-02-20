@@ -367,6 +367,9 @@ func TestPrintUsage_IncludesKeepWorkspaceErrorFlag(t *testing.T) {
 	if !strings.Contains(out, "governor checks [<tui|init|add|extract|list|validate|doctor|explain|test|enable|disable|lock|update-packs|trust>] [flags]") {
 		t.Fatalf("expected usage to include checks lock/update-packs/trust commands, got:\n%s", out)
 	}
+	if !strings.Contains(out, "governor fix <audit.json> [flags]") {
+		t.Fatalf("expected usage to include fix command, got:\n%s", out)
+	}
 }
 
 func TestRunAudit_RejectsNegativeTimeout(t *testing.T) {
@@ -758,6 +761,57 @@ func TestCheckFailOn_NoFindings(t *testing.T) {
 	report := model.AuditReport{}
 	if err := checkFailOn("critical", report); err != nil {
 		t.Fatalf("expected no error with zero findings: %v", err)
+	}
+}
+
+func TestCheckFailOnExploitability(t *testing.T) {
+	report := model.AuditReport{
+		Findings: []model.Finding{
+			{Title: "A", Exploitability: "theoretical"},
+			{Title: "B", Exploitability: "reachable"},
+		},
+	}
+	if err := checkFailOnExploitability("confirmed-path", report, -1, false); err != nil {
+		t.Fatalf("did not expect confirmed-path threshold error: %v", err)
+	}
+	if err := checkFailOnExploitability("reachable", report, -1, false); err == nil {
+		t.Fatal("expected reachable threshold to fail")
+	}
+}
+
+func TestCheckFailOnWithFilters(t *testing.T) {
+	report := model.AuditReport{
+		Findings: []model.Finding{
+			{
+				Title:      "No attack path",
+				Severity:   "critical",
+				Confidence: 0.95,
+			},
+			{
+				Title:      "Low confidence",
+				Severity:   "critical",
+				Confidence: 0.4,
+				AttackPath: []string{"request.id -> db.Query"},
+			},
+		},
+	}
+
+	if err := checkFailOnWithFilters("critical", report, 0.8, true); err != nil {
+		t.Fatalf("expected filtered findings to avoid failure: %v", err)
+	}
+}
+
+func TestCheckMaxNewReachable(t *testing.T) {
+	report := model.AuditReport{
+		Findings: []model.Finding{
+			{Title: "A", Exploitability: "reachable", Confidence: 0.9, AttackPath: []string{"request -> sink"}},
+		},
+	}
+	if err := checkMaxNewReachable(0, report, nil, -1, false); err == nil {
+		t.Fatal("expected max-new-reachable gate to fail")
+	}
+	if err := checkMaxNewReachable(1, report, nil, -1, false); err != nil {
+		t.Fatalf("expected max-new-reachable gate to pass: %v", err)
 	}
 }
 
